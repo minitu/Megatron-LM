@@ -26,6 +26,7 @@ from megatron.core.utils import divide
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
 from .utils import make_sharded_tensors_for_checkpoint
+from apex.transformer.functional import fused_apply_rotary_pos_emb
 
 
 @dataclass
@@ -252,12 +253,10 @@ class Attention(MegatronModule, ABC):
         # ================================================
         if rotary_pos_emb is not None:
             q_pos_emb, k_pos_emb = rotary_pos_emb
-            if self.config.apply_rope_fusion and HAVE_APPLY_ROPE_FUSION:
-                query = fused_apply_rotary_pos_emb(query, q_pos_emb)
-                key = fused_apply_rotary_pos_emb(key, k_pos_emb)
-            else:
-                query = apply_rotary_pos_emb(query, q_pos_emb)
-                key = apply_rotary_pos_emb(key, k_pos_emb)
+            #query = apply_rotary_pos_emb(query, q_pos_emb)
+            #key = apply_rotary_pos_emb(key, k_pos_emb)
+            query = fused_apply_rotary_pos_emb(query, q_pos_emb)
+            key = fused_apply_rotary_pos_emb(key, k_pos_emb)
             # TODO, can apply positional embedding to value_layer so it has
             # absolute positional embedding.
             # otherwise, only relative positional embedding takes effect

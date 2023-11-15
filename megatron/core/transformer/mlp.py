@@ -10,7 +10,8 @@ from megatron.core import parallel_state
 from megatron.core.dist_checkpointing import ShardedTensor
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict, ShardedTensorFactory
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
-from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl, swiglu_impl
+from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
+from megatron.core.fusions.fused_bias_swiglu import swiglu_impl
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -89,16 +90,13 @@ class MLP(MegatronModule):
             if self.activation_func == F.gelu:
                 assert self.config.add_bias_linear is True
                 intermediate_parallel = bias_gelu_impl(intermediate_parallel, bias_parallel)
-            elif self.activation_func == F.silu:
-                shape = intermediate_parallel.shape
-                intermediate_parallel = intermediate_parallel.view(-1, shape[2])
+            elif self.activation_func == glu:
+                x = torch.chunk(intermediate_parallel, 2, dim=-1)
                 if bias_parallel is not None:
-                    intermediate_parallel = bias_swiglu_impl(intermediate_parallel, bias_parallel)
+                    bias = torch.chunk(bias_parallel, 2, dim=-1)
+                    intermediate_parallel = bias_swiglu_impl(x[0], bias[0], x[1], bias[1])
                 else:
-                    intermediate_parallel = swiglu_impl(intermediate_parallel)
-                intermediate_parallel = intermediate_parallel.view(shape[0], shape[1], -1)
-            else:
-                raise ValueError("Only support fusion of gelu and swiglu")
+                    intermediate_parallel = swiglu_impl(x[0], x[1])
         else:
             if bias_parallel is not None:
                 intermediate_parallel = intermediate_parallel + bias_parallel
