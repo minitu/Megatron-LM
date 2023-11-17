@@ -5,13 +5,7 @@ from dataclasses import dataclass
 from typing import Union
 
 import torch
-try:
-    from apex.transformer.functional import fused_apply_rotary_pos_emb
-
-    HAVE_APPLY_ROPE_FUSION = True
-except:
-    HAVE_APPLY_ROPE_FUSION = False
-
+from apex.transformer.functional import fused_apply_rotary_pos_emb
 
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
@@ -26,7 +20,6 @@ from megatron.core.utils import divide
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
 from .utils import make_sharded_tensors_for_checkpoint
-from apex.transformer.functional import fused_apply_rotary_pos_emb
 
 
 @dataclass
