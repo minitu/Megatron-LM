@@ -111,8 +111,8 @@ class TransformerConfig(ModelParallelConfig):
     fp8_wgrad: bool = True
 
     # cpu offload
-    cpu_offloading: bool = True
-    cpu_offloading_num_layers: int = 1
+    cpu_offloading: bool = False
+    cpu_offloading_num_layers: int = 0
 
     # miscellaneous
     clone_scatter_output_in_embedding: bool = True
