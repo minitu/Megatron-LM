@@ -100,4 +100,34 @@ def _get_mlp_module_spec(
             submodules=MLPSubmodules(
                 linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear,
             ),
-        )
+        ),
+        mlp_bda=get_bias_dropout_add,
+    ),
+)
+
+# Use this spec for an implementation using only modules in megatron core for MoE models
+gpt_layer_local_spec_moe = ModuleSpec(
+    module=TransformerLayer,
+    submodules=TransformerLayerSubmodules(
+        input_layernorm=FusedLayerNorm,
+        self_attention=ModuleSpec(
+            module=SelfAttention,
+            params={"attn_mask_type": AttnMaskType.causal},
+            submodules=SelfAttentionSubmodules(
+                linear_qkv=ColumnParallelLinear,
+                core_attention=DotProductAttention,
+                linear_proj=RowParallelLinear,
+            ),
+        ),
+        self_attn_bda=get_bias_dropout_add,
+        pre_mlp_layernorm=FusedLayerNorm,
+        mlp=ModuleSpec(
+            module=SwitchMLP,  # MOE
+            submodules=MLPSubmodules(
+                linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear,
+            ),
+        ),
+        mlp_bda=get_bias_dropout_add,
+        sharded_state_dict_keys_map={'input_layernorm.': 'self_attention.linear_qkv.layer_norm_',},
+    ),
+)
