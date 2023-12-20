@@ -794,11 +794,9 @@ class ColumnParallelLinear(torch.nn.Module):
     def set_extra_state(self, state: Any):
         """ Extra state is ignored """
 
-    def get_extra_state(self) -> Any:
+    def get_extra_state(self) -> None:
         """ Keep compatibility with TE state dict. """
-        state_serialized = io.BytesIO()
-        torch.save(None, state_serialized)
-        return state_serialized
+        return None
 
 
 class RowParallelLinear(torch.nn.Module):
@@ -984,8 +982,6 @@ class RowParallelLinear(torch.nn.Module):
     def set_extra_state(self, state: Any):
         """ Extra state is ignored """
 
-    def get_extra_state(self) -> Any:
+    def get_extra_state(self) -> None:
         """ Keep compatibility with TE state dict. """
-        state_serialized = io.BytesIO()
-        torch.save(None, state_serialized)
-        return state_serialized
+        return None
