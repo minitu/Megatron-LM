@@ -2,6 +2,7 @@
 from typing import Optional, Tuple
 
 import torch
+from megatron.core.jit import jit_fuser
 
 
 def _bias_dropout_add_func(x_with_bias, residual, prob, training):
@@ -43,14 +44,14 @@ def bias_dropout_add_unfused(training):
     return _bias_dropout_add
 
 
-@torch.jit.script
+@jit_fuser
 def bias_dropout_add_fused_train(
     x_with_bias: Tuple[torch.Tensor, Optional[torch.Tensor]], residual: torch.Tensor, prob: float,
 ) -> torch.Tensor:
     return _bias_dropout_add_func(x_with_bias, residual, prob, True)
 
 
-@torch.jit.script
+@jit_fuser
 def bias_dropout_add_fused_inference(
     x_with_bias: Tuple[torch.Tensor, Optional[torch.Tensor]], residual: torch.Tensor, prob: float,
 ) -> torch.Tensor:
