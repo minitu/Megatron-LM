@@ -105,6 +105,7 @@ def _get_mlp_module_spec(
         )
 
 # gpt_full_te_layer_spec = ModuleSpec(module=TETransformerLayer)
-gpt_full_te_layer_spec = TransformerBlockSubmodules(
-    layer_specs=ModuleSpec(module=TETransformerLayer)
-)
+def get_gpt_full_te_layer_spec() -> TransformerBlockSubmodules:
+    return TransformerBlockSubmodules(
+        layer_specs=ModuleSpec(module=TETransformerLayer)
+    )
