@@ -137,6 +137,7 @@ class TELinear(te.pytorch.Linear):
         )
 
     def forward(self, x):
+        print("!!! TELinear forward is_first_microbatch:", self.is_first_microbatch)
         out = super().forward(x, is_first_microbatch=self.is_first_microbatch)
         self.is_first_microbatch = False
 
@@ -230,6 +231,7 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
         )
 
     def forward(self, x):
+        print("!!! TELayerNormColumnParallelLinear forward is_first_microbatch:", self.is_first_microbatch)
         out = super().forward(x, is_first_microbatch=self.is_first_microbatch)
         self.is_first_microbatch = False
 
