@@ -30,6 +30,8 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
         eod_mask_loss (bool): Option to enable the EOD mask loss
 
         vocab_size (int): Size of vocabulary
+                
+        add_one_extra_token (bool): Option to add an extra token to the input sequence
       
     """
 
@@ -40,6 +42,8 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
     eod_mask_loss: bool = None
 
     vocab_size: int = sys.maxsize
+        
+    add_one_extra_token: bool = True
 
     def __post_init__(self) -> None:
         """Do asserts and set fields post init
@@ -133,6 +137,7 @@ class GPTDataset(MegatronDataset):
         )
 
         self.vocab_size = config.vocab_size
+        self.add_one_extra_token = int(config.add_one_extra_token)
 
     def _finalize(self) -> None:
         """Abstract method implementation
@@ -194,8 +199,13 @@ class GPTDataset(MegatronDataset):
         text, _ = self._query_document_sample_shuffle_indices(idx)
 
         text = torch.from_numpy(text).long()
-        labels = text[1:].contiguous()
-        tokens = text[:-1].contiguous()
+        if self.add_one_extra_token:
+            tokens = text[:-1].contiguous()
+            labels = text[1:].contiguous()
+        else:
+            tokens = text
+            labels = torch.roll(text, shifts=-1, dims=0)
+            labels[-1] = -1
 
         assert not torch.any(
             tokens >= self.vocab_size
@@ -248,7 +258,7 @@ class GPTDataset(MegatronDataset):
                 self.dataset.get(
                     self.document_index[doc_index_beg],
                     offset=doc_index_beg_offset,
-                    length=doc_index_end_offset - doc_index_beg_offset + 1,
+                    length=doc_index_end_offset - doc_index_beg_offset + self.add_one_extra_token,
                 )
             )
 
@@ -260,7 +270,7 @@ class GPTDataset(MegatronDataset):
 
                 # Add the sample part
                 offset = 0 if i > doc_index_beg else doc_index_beg_offset
-                length = None if i < doc_index_end else doc_index_end_offset + 1
+                length = None if i < doc_index_end else doc_index_end_offset + self.add_one_extra_token
                 sample_parts.append(
                     self.dataset.get(self.document_index[i], offset=offset, length=length)
                 )
@@ -335,10 +345,10 @@ class GPTDataset(MegatronDataset):
             else:
                 # Get the number of samples for the last epoch
                 num_samples_sans_final_epoch = (
-                    (num_epochs - 1) * num_tokens_per_epoch - 1
+                    (num_epochs - 1) * num_tokens_per_epoch - self.add_one_extra_token
                 ) // sequence_length
                 num_samples_from_final_epoch = self.num_samples - num_samples_sans_final_epoch
-                num_samples_per_epoch = (num_tokens_per_epoch - 1) // sequence_length
+                num_samples_per_epoch = (num_tokens_per_epoch - self.add_one_extra_token) // sequence_length
 
                 # num_samples_from_final_epoch should be non-negative
                 assert num_samples_from_final_epoch >= 0
@@ -405,6 +415,7 @@ class GPTDataset(MegatronDataset):
                 sequence_length,
                 num_epochs,
                 num_tokens_per_epoch,
+                add_one_extra_token=self.add_one_extra_token,
             )
             numpy.save(path_to_sample_index, sample_index, allow_pickle=True)
             t_end = time.time()
@@ -494,14 +505,11 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The number of epochs
         """
-        num_epochs = 0
-        num_tokens = 0
-        num_tokens_requested = (self.num_samples * self.config.sequence_length) + 1
-        while True:
-            num_epochs += 1
-            num_tokens += num_tokens_per_epoch
-            if num_tokens >= num_tokens_requested:
-                return num_epochs
+        assert self.num_samples > 0, "The number of samples must be positive"
+        assert num_tokens_per_epoch > 0, "The number of tokens per epoch must be positive"
+        num_tokens_requested = (self.num_samples * self.config.sequence_length) + self.add_one_extra_token
+        num_epochs = (num_tokens_requested + num_tokens_per_epoch - 1) // num_tokens_per_epoch
+        return num_epochs
 
 
 def _build_document_index(
