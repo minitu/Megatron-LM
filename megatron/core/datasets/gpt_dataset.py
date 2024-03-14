@@ -30,6 +30,8 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
         eod_mask_loss (bool): Option to enable the EOD mask loss
 
         vocab_size (int): Size of vocabulary
+        
+        drop_last (bool): Option to drop the last incomplete batch
                 
         add_one_extra_token (bool): Option to add an extra token to the input sequence
       
@@ -42,6 +44,8 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
     eod_mask_loss: bool = None
 
     vocab_size: int = sys.maxsize
+    
+    drop_last: bool = True
         
     add_one_extra_token: bool = True
 
@@ -136,7 +140,9 @@ class GPTDataset(MegatronDataset):
             indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
         )
 
+        self.sequence_length = config.sequence_length
         self.vocab_size = config.vocab_size
+        self.drop_last = config.drop_last
         self.add_one_extra_token = int(config.add_one_extra_token)
 
     def _finalize(self) -> None:
@@ -218,6 +224,10 @@ class GPTDataset(MegatronDataset):
             self.config.reset_attention_mask,
             self.config.eod_mask_loss,
         )
+        
+        loss_mask[labels == -1] = 0.0
+        tokens[tokens == -1] = 0
+        labels[labels == -1] = 0
 
         return {
             "tokens": tokens,
@@ -274,9 +284,23 @@ class GPTDataset(MegatronDataset):
                 sample_parts.append(
                     self.dataset.get(self.document_index[i], offset=offset, length=length)
                 )
-
+        sample = numpy.concatenate(sample_parts)
+        
+        # Pad the sample if necessary
+        if len(sample) != (self.sequence_length + self.add_one_extra_token):
+            logging.info(
+                f' > WARNING: Got sample of length: {len(sample)} for sequence length={self.sequence_length+self.add_one_extra_token}, padding the sample to match sequence length'
+            )
+            sample = numpy.array(sample, dtype=numpy.int64)
+            sample = numpy.pad(sample, (0, self.sequence_length + self.add_one_extra_token - len(sample)), mode='constant', constant_values=-1)
+            
+            document_ids = numpy.array(document_ids, dtype=numpy.int64)
+            document_ids = numpy.pad(document_ids, (0, self.sequence_length + self.add_one_extra_token - len(sample)), mode='constant', constant_values=-1)
+            
+            assert len(sample) == len(document_ids), f"Sample and document ids must have the same length, got {len(sample)} and {len(document_ids)}"
+        
         return (
-            numpy.array(numpy.concatenate(sample_parts), dtype=numpy.int64),
+            numpy.array(sample, dtype=numpy.int64),
             numpy.array(document_ids, dtype=numpy.int64),
         )
 
@@ -415,6 +439,7 @@ class GPTDataset(MegatronDataset):
                 sequence_length,
                 num_epochs,
                 num_tokens_per_epoch,
+                drop_last = self.drop_last,
                 add_one_extra_token=self.add_one_extra_token,
             )
             numpy.save(path_to_sample_index, sample_index, allow_pickle=True)
