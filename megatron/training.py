@@ -1317,14 +1317,24 @@ def build_train_valid_test_data_loaders(
         # Build datasets.
         train_ds, valid_ds, test_ds = build_train_valid_test_datasets(
             build_train_valid_test_datasets_provider)
-        # Build dataloders.
+        # Build train dataloders.
         train_dataloader = build_pretraining_data_loader(
             train_ds, args.consumed_train_samples)
+        
+        # Build validation dataloders.
+        logging.info(f'Drop last in validation dataset is set to {args.validation_drop_last}')
+        drop_last = args.validation_drop_last
+        
+        logging.info(f'pad_to_global_batch_size set to {args.pad_to_global_batch_size}')
+        pad_to_global_batch_size = args.validation_drop_last
+        
         if args.skip_train:
-            valid_dataloader = build_pretraining_data_loader(valid_ds, 0)
+            valid_dataloader = build_pretraining_data_loader(valid_ds, 0, drop_last, pad_to_global_batch_size)
         else:
             valid_dataloader = build_pretraining_data_loader(
-                valid_ds, args.consumed_valid_samples)
+                valid_ds, args.consumed_valid_samples, drop_last, pad_to_global_batch_size)
+        
+        # Build test dataloders.
         test_dataloader = build_pretraining_data_loader(test_ds, 0)
 
         # Flags to know if we need to do training/validation/testing.

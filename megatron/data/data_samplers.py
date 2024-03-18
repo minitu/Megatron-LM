@@ -11,7 +11,9 @@ from megatron import get_args
 from megatron.core import mpu
 
 
-def build_pretraining_data_loader(dataset, consumed_samples):
+def build_pretraining_data_loader(
+    dataset, consumed_samples, drop_last=True, pad_to_global_batch_size=False
+    ):
     """Buld dataloader given an input dataset."""
 
     if dataset is None:
@@ -25,7 +27,10 @@ def build_pretraining_data_loader(dataset, consumed_samples):
             consumed_samples=consumed_samples,
             micro_batch_size=args.micro_batch_size,
             data_parallel_rank=mpu.get_data_parallel_rank(),
-            data_parallel_size=mpu.get_data_parallel_world_size())
+            data_parallel_size=mpu.get_data_parallel_world_size(),
+            drop_last=drop_last,
+            pad_to_global_batch_size=pad_to_global_batch_size,
+            )
     elif args.dataloader_type == 'cyclic':
         batch_sampler = MegatronPretrainingRandomSampler(
             dataset,
@@ -50,15 +55,17 @@ def build_pretraining_data_loader(dataset, consumed_samples):
 class MegatronPretrainingSampler:
 
     def __init__(self, total_samples, consumed_samples, micro_batch_size,
-                 data_parallel_rank, data_parallel_size, drop_last=True):
+                 data_parallel_rank, data_parallel_size, drop_last=True, pad_to_global_batch_size=False):
         # Keep a copy of input params for later use.
         self.total_samples = total_samples
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
+        self.data_parallel_size = data_parallel_size
         self.data_parallel_rank = data_parallel_rank
         self.micro_batch_times_data_parallel_size = \
             self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last
+        self.pad_to_global_batch_size = pad_to_global_batch_size
 
         # Sanity checks.
         assert self.total_samples > 0, \
@@ -67,10 +74,10 @@ class MegatronPretrainingSampler:
             'no samples left to consume: {}, {}'.format(self.consumed_samples,
                                                         self.total_samples)
         assert self.micro_batch_size > 0
-        assert data_parallel_size > 0
-        assert self.data_parallel_rank < data_parallel_size, \
+        assert self.data_parallel_size > 0
+        assert self.data_parallel_rank < self.data_parallel_size, \
             'data_parallel_rank should be smaller than data size: {}, ' \
-            '{}'.format(self.data_parallel_rank, data_parallel_size)
+            '{}'.format(self.data_parallel_rank, self.data_parallel_size)
 
     def __len__(self):
         return self.total_samples
@@ -92,8 +99,11 @@ class MegatronPretrainingSampler:
 
         # Check the last partial batch and see drop_last is set
         if len(batch) > 0 and not self.drop_last:
-            start_idx, end_idx = self.get_start_end_idx()
-            yield batch[start_idx:end_idx]
+            indices = list(batch[self.data_parallel_rank: len(batch): self.data_parallel_size])
+            if self.pad_to_global_batch_size:
+                num_pad = self.micro_batch_times_data_parallel_size // self.data_parallel_size - len(indices)
+                indices = indices + [-1] * num_pad
+            yield indices
 
 
 class RandomSeedDataset(Dataset):
@@ -139,7 +149,7 @@ class MegatronPretrainingRandomSampler:
         assert self.total_samples > 0, \
             'no sample to consume: {}'.format(self.total_samples)
         assert self.micro_batch_size > 0
-        assert data_parallel_size > 0
+        assert self.data_parallel_size > 0
         assert self.data_parallel_rank < data_parallel_size, \
             'data_parallel_rank should be smaller than data size: {}, ' \
             '{}'.format(self.data_parallel_rank, data_parallel_size)
