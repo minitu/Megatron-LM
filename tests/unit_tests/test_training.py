@@ -22,6 +22,8 @@ def create_test_args():
     args.consumed_valid_samples = 1
     args.dataloader_type = "external"
     args.skip_train = False
+    args.validation_drop_last=True
+    args.pad_to_global_batch_size=True
 
     return args
 

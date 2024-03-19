@@ -1331,6 +1331,7 @@ def build_train_valid_test_data_loaders(
             train_ds, args.consumed_train_samples)
         
         # Build validation dataloders.
+        print(args)
         logging.info(f'Drop last in validation dataset is set to {args.validation_drop_last}')
         drop_last = args.validation_drop_last
         

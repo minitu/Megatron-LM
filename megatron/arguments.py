@@ -903,9 +903,9 @@ def _add_training_args(parser):
     group.add_argument('--disable-tp-comm-bulk-wgrad', action='store_false',
                        help = 'Disables the Reduce-Scatter overlap with bprop weight gradient GEMM.',
                        dest='tp_comm_bulk_wgrad')
-    group.add_argument('--validation_drop_last', action='store_false', 
+    group.add_argument('--validation_drop_last', action='store_false', default=True,
                        help = 'Drop last partial validation samples.')
-    group.add_argument('--pad_to_global_batch_size', action='store_false', 
+    group.add_argument('--pad_to_global_batch_size', action='store_false', default=True,
                        help = "pad the last partial batch with -1's to equal global batch size.")
 
 
