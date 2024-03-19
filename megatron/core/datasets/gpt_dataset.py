@@ -44,9 +44,9 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
     eod_mask_loss: bool = None
 
     vocab_size: int = sys.maxsize
-    
+
     drop_last: bool = True
-        
+
     add_one_extra_token: bool = True
 
     def __post_init__(self) -> None:
@@ -83,9 +83,8 @@ class MockGPTDataset(MockDataset):
         eod = 0
 
         assert (
-            idx < self.num_samples,
-            "Exceeded the available number of samples ({self.num_samples})",
-        )
+            idx < self.num_samples
+        ), "Exceeded the available number of samples ({self.num_samples})"
 
         rng = numpy.random.default_rng(seed=[self.index_split.value, idx])
         length = rng.integers(low=0, high=self.config.sequence_length)
@@ -228,7 +227,7 @@ class GPTDataset(MegatronDataset):
             self.config.reset_attention_mask,
             self.config.eod_mask_loss,
         )
-        
+
         loss_mask[labels == -1] = 0.0
         tokens[tokens == -1] = 0
         labels[labels == -1] = 0
@@ -293,25 +292,39 @@ class GPTDataset(MegatronDataset):
 
                 # Add the sample part
                 offset = 0 if i > doc_index_beg else doc_index_beg_offset
-                length = None if i < doc_index_end else doc_index_end_offset + self.add_one_extra_token
+                length = (
+                    None if i < doc_index_end else doc_index_end_offset + self.add_one_extra_token
+                )
                 sample_parts.append(
                     self.dataset.get(self.document_index[i], offset=offset, length=length)
                 )
         sample = numpy.concatenate(sample_parts)
-        
+
         # Pad the sample if necessary
         if len(sample) != (self.sequence_length + self.add_one_extra_token):
             logging.info(
                 f' > WARNING: Got sample of length: {len(sample)} for sequence length={self.sequence_length+self.add_one_extra_token}, padding the sample to match sequence length'
             )
             sample = numpy.array(sample, dtype=numpy.int64)
-            sample = numpy.pad(sample, (0, self.sequence_length + self.add_one_extra_token - len(sample)), mode='constant', constant_values=-1)
-            
+            sample = numpy.pad(
+                sample,
+                (0, self.sequence_length + self.add_one_extra_token - len(sample)),
+                mode='constant',
+                constant_values=-1,
+            )
+
             document_ids = numpy.array(document_ids, dtype=numpy.int64)
-            document_ids = numpy.pad(document_ids, (0, self.sequence_length + self.add_one_extra_token - len(sample)), mode='constant', constant_values=-1)
-            
-            assert len(sample) == len(document_ids), f"Sample and document ids must have the same length, got {len(sample)} and {len(document_ids)}"
-        
+            document_ids = numpy.pad(
+                document_ids,
+                (0, self.sequence_length + self.add_one_extra_token - len(sample)),
+                mode='constant',
+                constant_values=-1,
+            )
+
+            assert len(sample) == len(
+                document_ids
+            ), f"Sample and document ids must have the same length, got {len(sample)} and {len(document_ids)}"
+
         return (
             numpy.array(sample, dtype=numpy.int64),
             numpy.array(document_ids, dtype=numpy.int64),
@@ -381,7 +394,9 @@ class GPTDataset(MegatronDataset):
                     (num_epochs - 1) * num_tokens_per_epoch - self.add_one_extra_token
                 ) // sequence_length
                 num_samples_from_final_epoch = self.num_samples - num_samples_sans_final_epoch
-                num_samples_per_epoch = (num_tokens_per_epoch - self.add_one_extra_token) // sequence_length
+                num_samples_per_epoch = (
+                    num_tokens_per_epoch - self.add_one_extra_token
+                ) // sequence_length
 
                 # num_samples_from_final_epoch should be non-negative
                 assert num_samples_from_final_epoch >= 0
@@ -448,7 +463,7 @@ class GPTDataset(MegatronDataset):
                 sequence_length,
                 num_epochs,
                 num_tokens_per_epoch,
-                drop_last = self.drop_last,
+                drop_last=self.drop_last,
                 add_one_extra_token=self.add_one_extra_token,
             )
             numpy.save(path_to_sample_index, sample_index, allow_pickle=True)
@@ -540,7 +555,9 @@ class GPTDataset(MegatronDataset):
         """
         assert self.num_samples > 0, "The number of samples must be positive"
         assert num_tokens_per_epoch > 0, "The number of tokens per epoch must be positive"
-        num_tokens_requested = (self.num_samples * self.config.sequence_length) + self.add_one_extra_token
+        num_tokens_requested = (
+            self.num_samples * self.config.sequence_length
+        ) + self.add_one_extra_token
         num_epochs = (num_tokens_requested + num_tokens_per_epoch - 1) // num_tokens_per_epoch
         return num_epochs
 
