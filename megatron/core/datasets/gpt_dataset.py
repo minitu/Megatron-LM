@@ -234,6 +234,9 @@ class GPTDataset(MegatronDataset):
         if idx == -1:
             logging.debug('Got -1 as item index. Masking loss from this sample')
             loss_mask = torch.zeros_like(loss_mask)
+        elif idx < 0:
+            logging.debug('Got negative as item index. Raising ValueError.')
+            raise ValueError(f"Got negative index: {idx}")
 
         return {
             "tokens": tokens,
