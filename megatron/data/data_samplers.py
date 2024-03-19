@@ -7,6 +7,7 @@ import random
 import torch
 import numpy as np
 from torch.utils.data import Dataset
+from typing import Optional
 from megatron import get_args
 from megatron.core import mpu
 
@@ -54,8 +55,47 @@ def build_pretraining_data_loader(
 
 class MegatronPretrainingSampler:
 
-    def __init__(self, total_samples, consumed_samples, micro_batch_size,
-                 data_parallel_rank, data_parallel_size, drop_last=True, pad_to_global_batch_size=False):
+    def __init__(
+        self,
+        total_samples: int,
+        consumed_samples: int,
+        micro_batch_size: int,
+        data_parallel_rank: int,
+        data_parallel_size: int,
+        drop_last: bool = True,
+        global_batch_size: Optional[int] = None,
+        pad_to_global_batch_size: Optional[bool] = False,
+    ) -> None:
+        
+        # Sanity checks.
+        if total_samples <= 0:
+            raise RuntimeError("no sample to consume: {}".format(total_samples))
+        if consumed_samples >= total_samples:
+            raise RuntimeError("no samples left to consume: {}, {}".format(consumed_samples, total_samples))
+        if micro_batch_size <= 0:
+            raise RuntimeError(f"micro_batch_size size must be greater than 0, but {micro_batch_size}")
+        if data_parallel_size <= 0:
+            raise RuntimeError(f"data parallel size must be greater than 0, but {data_parallel_size}")
+        if data_parallel_rank >= data_parallel_size:
+            raise RuntimeError(
+                "data_parallel_rank should be smaller than data size, but {} >= {}".format(
+                    data_parallel_rank, data_parallel_size
+                )
+            )
+        if global_batch_size is not None:
+            if global_batch_size % (micro_batch_size * data_parallel_size) != 0:
+                raise RuntimeError(
+                    f"`global_batch_size` ({global_batch_size}) is not divisible by "
+                    f"`micro_batch_size ({micro_batch_size}) x data_parallel_size "
+                    f"({data_parallel_size})`"
+                )
+        if pad_to_global_batch_size and global_batch_size is None:
+            raise RuntimeError(
+                f"`pad_to_global_batch_size` can be `True` only when "
+                f"`global_batch_size` is set to an integer value"
+            )
+
+        
         # Keep a copy of input params for later use.
         self.total_samples = total_samples
         self.consumed_samples = consumed_samples
@@ -65,6 +105,7 @@ class MegatronPretrainingSampler:
         self.micro_batch_times_data_parallel_size = \
             self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last
+        self.global_batch_size = global_batch_size
         self.pad_to_global_batch_size = pad_to_global_batch_size
 
         # Sanity checks.
@@ -99,11 +140,17 @@ class MegatronPretrainingSampler:
 
         # Check the last partial batch and see drop_last is set
         if len(batch) > 0 and not self.drop_last:
-            indices = list(batch[self.data_parallel_rank: len(batch): self.data_parallel_size])
-            if self.pad_to_global_batch_size:
-                num_pad = self.micro_batch_times_data_parallel_size // self.data_parallel_size - len(indices)
-                indices = indices + [-1] * num_pad
-            yield indices
+            if self.pad_samples_to_global_batch_size:
+                for i in range(
+                    self.data_parallel_rank, self.global_batch_size, self.micro_batch_times_data_parallel_size
+                ):
+                    indices = [batch[j] for j in range(i, min(len(batch), i + self.micro_batch_size))]
+                    num_pad = self.micro_batch_size - len(indices)
+                    indices = indices + [-1] * num_pad
+                    yield indices
+            else:
+                start_idx, end_idx = self.get_start_end_idx()
+                yield batch[start_idx:end_idx]
 
 
 class RandomSeedDataset(Dataset):
