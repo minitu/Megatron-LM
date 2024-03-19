@@ -2,55 +2,63 @@
 
 """Pretrain utilities."""
 
-import gc
 import dataclasses
-from datetime import datetime
-import math
+import gc
 import logging
+import math
 import os
 import sys
+from datetime import datetime
+
 from .log_handler import CustomHandler
+
 # Make default logging level INFO, but filter out all log messages not from MCore.
 logging.basicConfig(handlers=[CustomHandler()], level=logging.INFO)
-from .theoretical_memory_usage import report_theoretical_memory
 import time
+
+from .theoretical_memory_usage import report_theoretical_memory
+
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
 import torch
 
-from megatron import get_args
-from megatron import get_signal_handler
-from megatron import get_timers
-from megatron import get_tensorboard_writer
-from megatron import get_wandb_writer
-from megatron import get_one_logger
-from megatron import get_current_global_batch_size
-from megatron import get_num_microbatches
-from megatron import is_last_rank
-from megatron import update_num_microbatches
+from megatron import (
+    get_args,
+    get_current_global_batch_size,
+    get_num_microbatches,
+    get_one_logger,
+    get_signal_handler,
+    get_tensorboard_writer,
+    get_timers,
+    get_wandb_writer,
+    is_last_rank,
+    print_rank_0,
+    print_rank_last,
+    update_num_microbatches,
+)
+from megatron.checkpointing import load_checkpoint, save_checkpoint
 from megatron.core import mpu, tensor_parallel
-from megatron.core.utils import get_model_config
-from megatron import print_rank_0
-from megatron import print_rank_last
-from megatron.checkpointing import load_checkpoint
-from megatron.checkpointing import save_checkpoint
-from megatron.model import Float16Module
-from megatron.model import GPTModel
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
-from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
-from megatron.initialize import initialize_megatron
-from megatron.initialize import write_args_to_tensorboard
-from megatron.initialize import set_jit_fusion_options
-from megatron.optimizer_param_scheduler import OptimizerParamScheduler
-from megatron.utils import check_adlr_autoresume_termination
-from megatron.utils import unwrap_model
-from megatron.data.data_samplers import build_pretraining_data_loader
-from megatron.utils import calc_params_l2_norm
+from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.utils import report_memory
+from megatron.core.utils import get_model_config
+from megatron.data.data_samplers import build_pretraining_data_loader
+from megatron.initialize import (
+    initialize_megatron,
+    set_jit_fusion_options,
+    write_args_to_tensorboard,
+)
+from megatron.model import Float16Module, GPTModel
 from megatron.model.vision.knn_monitor import compute_feature_bank
+from megatron.optimizer_param_scheduler import OptimizerParamScheduler
+from megatron.utils import (
+    calc_params_l2_norm,
+    check_adlr_autoresume_termination,
+    report_memory,
+    unwrap_model,
+)
 
 
 def print_datetime(string):

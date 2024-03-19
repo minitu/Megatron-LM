@@ -4,17 +4,19 @@
 
 
 import random
-import torch
-import numpy as np
-from torch.utils.data import Dataset
 from typing import Optional
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+
 from megatron import get_args
 from megatron.core import mpu
 
 
 def build_pretraining_data_loader(
     dataset, consumed_samples, drop_last=True, pad_to_global_batch_size=False
-    ):
+):
     """Build dataloader given an input dataset."""
 
     if dataset is None:
@@ -31,7 +33,7 @@ def build_pretraining_data_loader(
             data_parallel_size=mpu.get_data_parallel_world_size(),
             drop_last=drop_last,
             pad_to_global_batch_size=pad_to_global_batch_size,
-            )
+        )
     elif args.dataloader_type == 'cyclic':
         batch_sampler = MegatronPretrainingRandomSampler(
             dataset,
@@ -40,25 +42,26 @@ def build_pretraining_data_loader(
             micro_batch_size=args.micro_batch_size,
             data_parallel_rank=mpu.get_data_parallel_rank(),
             data_parallel_size=mpu.get_data_parallel_world_size(),
-            data_sharding=args.data_sharding)
+            data_sharding=args.data_sharding,
+        )
     elif args.dataloader_type == "external":
         # External dataloaders are passed through. User is expected to provide a
         # torch-compatible dataloader and define samplers, if needed.
         return dataset
     else:
-        raise Exception('{} dataloader type is not supported.'.format(
-                args.dataloader_type))
+        raise Exception('{} dataloader type is not supported.'.format(args.dataloader_type))
 
     # Torch dataloader.
-    return torch.utils.data.DataLoader(dataset,
-                                       batch_sampler=batch_sampler,
-                                       num_workers=args.num_workers,
-                                       pin_memory=True,
-                                       persistent_workers=True if args.num_workers > 0 else False,
-                                       )
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True if args.num_workers > 0 else False,
+    )
+
 
 class MegatronPretrainingSampler:
-
     def __init__(
         self,
         total_samples: int,
@@ -70,16 +73,22 @@ class MegatronPretrainingSampler:
         global_batch_size: Optional[int] = None,
         pad_to_global_batch_size: Optional[bool] = False,
     ) -> None:
-        
+
         # Sanity checks.
         if total_samples <= 0:
             raise RuntimeError("no sample to consume: {}".format(total_samples))
         if consumed_samples >= total_samples:
-            raise RuntimeError("no samples left to consume: {}, {}".format(consumed_samples, total_samples))
+            raise RuntimeError(
+                "no samples left to consume: {}, {}".format(consumed_samples, total_samples)
+            )
         if micro_batch_size <= 0:
-            raise RuntimeError(f"micro_batch_size size must be greater than 0, but {micro_batch_size}")
+            raise RuntimeError(
+                f"micro_batch_size size must be greater than 0, but {micro_batch_size}"
+            )
         if data_parallel_size <= 0:
-            raise RuntimeError(f"data parallel size must be greater than 0, but {data_parallel_size}")
+            raise RuntimeError(
+                f"data parallel size must be greater than 0, but {data_parallel_size}"
+            )
         if data_parallel_rank >= data_parallel_size:
             raise RuntimeError(
                 "data_parallel_rank should be smaller than data size, but {} >= {}".format(
@@ -99,30 +108,28 @@ class MegatronPretrainingSampler:
                 f"`global_batch_size` is set to an integer value"
             )
 
-        
         # Keep a copy of input params for later use.
         self.total_samples = total_samples
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
         self.data_parallel_size = data_parallel_size
         self.data_parallel_rank = data_parallel_rank
-        self.micro_batch_times_data_parallel_size = \
-            self.micro_batch_size * data_parallel_size
+        self.micro_batch_times_data_parallel_size = self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last
         self.global_batch_size = global_batch_size
         self.pad_to_global_batch_size = pad_to_global_batch_size
 
         # Sanity checks.
-        assert self.total_samples > 0, \
-            'no sample to consume: {}'.format(self.total_samples)
-        assert self.consumed_samples < self.total_samples, \
-            'no samples left to consume: {}, {}'.format(self.consumed_samples,
-                                                        self.total_samples)
+        assert self.total_samples > 0, 'no sample to consume: {}'.format(self.total_samples)
+        assert (
+            self.consumed_samples < self.total_samples
+        ), 'no samples left to consume: {}, {}'.format(self.consumed_samples, self.total_samples)
         assert self.micro_batch_size > 0
         assert self.data_parallel_size > 0
-        assert self.data_parallel_rank < self.data_parallel_size, \
-            'data_parallel_rank should be smaller than data size: {}, ' \
+        assert self.data_parallel_rank < self.data_parallel_size, (
+            'data_parallel_rank should be smaller than data size: {}, '
             '{}'.format(self.data_parallel_rank, self.data_parallel_size)
+        )
 
     def __len__(self):
         return self.total_samples
@@ -146,9 +153,13 @@ class MegatronPretrainingSampler:
         if len(batch) > 0 and not self.drop_last:
             if self.pad_samples_to_global_batch_size:
                 for i in range(
-                    self.data_parallel_rank, self.global_batch_size, self.micro_batch_times_data_parallel_size
+                    self.data_parallel_rank,
+                    self.global_batch_size,
+                    self.micro_batch_times_data_parallel_size,
                 ):
-                    indices = [batch[j] for j in range(i, min(len(batch), i + self.micro_batch_size))]
+                    indices = [
+                        batch[j] for j in range(i, min(len(batch), i + self.micro_batch_size))
+                    ]
                     num_pad = self.micro_batch_size - len(indices)
                     indices = indices + [-1] * num_pad
                     yield indices
@@ -158,7 +169,6 @@ class MegatronPretrainingSampler:
 
 
 class RandomSeedDataset(Dataset):
-
     def __init__(self, dataset):
         args = get_args()
         self.base_seed = args.seed
@@ -180,9 +190,16 @@ class RandomSeedDataset(Dataset):
 
 
 class MegatronPretrainingRandomSampler:
-
-    def __init__(self, dataset, total_samples, consumed_samples, micro_batch_size,
-                 data_parallel_rank, data_parallel_size, data_sharding):
+    def __init__(
+        self,
+        dataset,
+        total_samples,
+        consumed_samples,
+        micro_batch_size,
+        data_parallel_rank,
+        data_parallel_size,
+        data_sharding,
+    ):
         # Keep a copy of input params for later use.
         self.dataset = dataset
         self.total_samples = total_samples
@@ -191,19 +208,17 @@ class MegatronPretrainingRandomSampler:
         self.data_parallel_rank = data_parallel_rank
         self.data_parallel_size = data_parallel_size
         self.data_sharding = data_sharding
-        self.micro_batch_times_data_parallel_size = \
-            self.micro_batch_size * data_parallel_size
-        self.last_batch_size = \
-            self.total_samples % self.micro_batch_times_data_parallel_size
+        self.micro_batch_times_data_parallel_size = self.micro_batch_size * data_parallel_size
+        self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
 
         # Sanity checks.
-        assert self.total_samples > 0, \
-            'no sample to consume: {}'.format(self.total_samples)
+        assert self.total_samples > 0, 'no sample to consume: {}'.format(self.total_samples)
         assert self.micro_batch_size > 0
         assert self.data_parallel_size > 0
-        assert self.data_parallel_rank < data_parallel_size, \
-            'data_parallel_rank should be smaller than data size: {}, ' \
+        assert self.data_parallel_rank < data_parallel_size, (
+            'data_parallel_rank should be smaller than data size: {}, '
             '{}'.format(self.data_parallel_rank, data_parallel_size)
+        )
 
     def __len__(self):
         return self.total_samples
@@ -219,8 +234,9 @@ class MegatronPretrainingRandomSampler:
 
         # data sharding and random sampling
         if self.data_sharding:
-            bucket_size = (self.total_samples // self.micro_batch_times_data_parallel_size) \
-                           * self.micro_batch_size
+            bucket_size = (
+                self.total_samples // self.micro_batch_times_data_parallel_size
+            ) * self.micro_batch_size
             bucket_offset = current_epoch_samples // self.data_parallel_size
             start_idx = self.data_parallel_rank * bucket_size
 
@@ -229,15 +245,13 @@ class MegatronPretrainingRandomSampler:
             random_idx = torch.randperm(bucket_size, generator=g).tolist()
             idx_range = [start_idx + x for x in random_idx[bucket_offset:]]
         else:
-            full_bucket_size = (self.total_samples // self.micro_batch_size) \
-                                * self.micro_batch_size
+            full_bucket_size = (self.total_samples // self.micro_batch_size) * self.micro_batch_size
             full_bucket_offset = current_epoch_samples
             g = torch.Generator()
             g.manual_seed(self.epoch)
-            idx_range_total = \
-                torch.randperm(full_bucket_size, generator=g).tolist()
+            idx_range_total = torch.randperm(full_bucket_size, generator=g).tolist()
             idx_range_active = idx_range_total[full_bucket_offset:]
-            idx_range = idx_range_active[self.data_parallel_rank::self.data_parallel_size]
+            idx_range = idx_range_active[self.data_parallel_rank :: self.data_parallel_size]
 
         batch = []
         # Last batch if not complete will be dropped.

@@ -6,15 +6,15 @@ import argparse
 import dataclasses
 import json
 import os
-import torch
 import types
 
+import torch
 import torch.nn.functional as F
-from megatron.global_vars import set_retro_args, get_retro_args
-from tools.retro.utils import get_args_path as get_retro_args_path
 
 from megatron.core.models.retro import RetroConfig
 from megatron.core.transformer import TransformerConfig
+from megatron.global_vars import get_retro_args, set_retro_args
+from tools.retro.utils import get_args_path as get_retro_args_path
 
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
