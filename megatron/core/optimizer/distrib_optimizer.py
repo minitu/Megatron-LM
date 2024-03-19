@@ -9,7 +9,8 @@ from logging import getLogger
 import torch
 from apex.optimizers import FusedAdam as Adam
 
-from .. import tensor_parallel
+from .. import parallel_state, tensor_parallel
+from ..dist_checkpointing.mapping import LocalNonpersitentObject, ShardedObject, ShardedStateDict
 from ..distributed import shard_buffer
 from .optimizer import MixedPrecisionOptimizer, _zero_grad_group_helper
 
@@ -61,8 +62,8 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             use any loss scale. Note that for `bf16 = True`, we can have
             a constnat gradient scaler. Also for `bf16 = False`, we
             always require a grad scaler.
-        grad_buffers: the implementation of the distributed optimizer is
-            centered on using the contiguous grad buffer for communicating
+        buffers: the implementation of the distributed optimizer is
+            centered on using a contiguous buffer for communicating
             grads & params between the model state and the optimizer state.
             You can find a more detailed description in this document 
             https://github.com/NVIDIA/Megatron-LM/blob/main/docs/source/distrib_optimizer.md
@@ -143,8 +144,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         data_parallel_world_size = grad_buffer.data_parallel_group.size()
 
         bucket = grad_buffer.buckets[bucket_index]
-        bucket_buffer = bucket.data
-        gbuf_size = bucket_buffer.numel()
+        gbuf_size = bucket.grad_data.numel()
         assert (
             gbuf_size % data_parallel_world_size == 0
         ), f"Each bucket's buffer size should be divisible by {data_parallel_world_size}"
@@ -188,10 +188,10 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         shard is 1/dp_world_size of the bucket).
 
         Args:
-            grad_buffer (GradBuffer): grad buffer to build mapping for.
+            grad_buffer (ParamAndGradBuffer): grad buffer to build mapping for.
         """
         return {
-            grad_buffer.dtype: [
+            (grad_buffer.param_dtype, grad_buffer.grad_dtype): [
                 cls.build_model_gbuf_range(grad_buffer, bucket_index)
                 for bucket_index in range(len(grad_buffer.buckets))
             ]
@@ -378,10 +378,12 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         bf16,
         params_dtype,
         grad_scaler,
-        per_model_grad_buffers,
+        init_state_fn,
+        per_model_buffers,
         overlap_param_gather,
         data_parallel_group,
         data_parallel_group_gloo,
+        data_parallel_group_idx,
     ):
         """
         See top of class definition for argument descriptions.
@@ -402,6 +404,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             bf16,
             params_dtype,
             grad_scaler,
+            init_state_fn,
         )
 
         assert isinstance(
@@ -409,28 +412,43 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         ), "Only Adam currently supported, due to checkpointing requirements."
 
         # Model grad buffer ranges.
-        assert per_model_grad_buffers, "grad_buffers must be provided"
-        self.grad_buffers = list(itertools.chain(*per_model_grad_buffers.values()))
-        self.per_model_grad_buffers = per_model_grad_buffers
+        assert per_model_buffers, "buffers must be provided"
+        self.buffers = list(itertools.chain(*per_model_buffers.values()))
+        self.per_model_buffers = per_model_buffers
         self.data_parallel_group = data_parallel_group
         self.data_parallel_group_gloo = data_parallel_group_gloo
+        self.data_parallel_group_idx = data_parallel_group_idx
         self.gbuf_idx_to_model_idx_map = {}
         gbuf_idx = 0
-        for model_idx, grad_buffers in self.per_model_grad_buffers.items():
-            for _ in grad_buffers:
+        for model_idx, buffers in self.per_model_buffers.items():
+            for _ in buffers:
                 self.gbuf_idx_to_model_idx_map[gbuf_idx] = model_idx
                 gbuf_idx += 1
         self.gbuf_ranges = []
         self.per_bucket_numel = []
         self.per_bucket_numel_unpadded = []
-        for grad_buffer in self.grad_buffers:
+        self.param_buffers = []
+        for buffer in self.buffers:
+            # self.param_buffers needs handles to each param_buffer bucket to coordinate all-gather.
+            self.param_buffers.append([])
+            for bucket in buffer.buckets:
+                self.param_buffers[-1].append(bucket.param_data)
+
             self.per_bucket_numel.append(
-                {grad_buffer.dtype: [bucket.data.numel() for bucket in grad_buffer.buckets]}
+                {
+                    (buffer.param_dtype, buffer.grad_dtype): [
+                        bucket.grad_data.numel() for bucket in buffer.buckets
+                    ]
+                }
             )
             self.per_bucket_numel_unpadded.append(
-                {grad_buffer.dtype: [bucket.numel_unpadded for bucket in grad_buffer.buckets]}
+                {
+                    (buffer.param_dtype, buffer.grad_dtype): [
+                        bucket.numel_unpadded for bucket in buffer.buckets
+                    ]
+                }
             )
-            self.gbuf_ranges.append(self.build_gbuf_range_map(grad_buffer))
+            self.gbuf_ranges.append(self.build_gbuf_range_map(buffer))
         self.model_param_gbuf_map = self.build_model_param_gbuf_map(self.gbuf_ranges)
 
         # Optimizer ranges.
@@ -449,36 +467,12 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             self.gbuf_ranges, self.model_param_gbuf_map, self.opt_group_ranges
         )
 
-        # Initialize param buffers.
-        # - These are views on the DDP model's grad buffers, that share
-        #   storage & have their own dtype. This is safe because the param
-        #   dtype size is always <= grad dtype size.
-        self.param_buffers = []
-        for gbuf_index, grad_buffer in enumerate(self.grad_buffers):
-            size_ratio = torch.finfo(grad_buffer.dtype).bits // torch.finfo(params_dtype).bits
-            assert (
-                size_ratio >= 1
-            ), "param_dtype size should be smaller than or equal to grad_dtype size"
-            current_param_buffers = []
-            for bucket in grad_buffer.buckets:
-                param_buffer = bucket.data.view(dtype=params_dtype)
-                param_buffer = param_buffer[: bucket.data.numel()]
-                assert (
-                    param_buffer.data_ptr() == bucket.data.data_ptr()
-                ), "param_buffer and grad_buffer for same bucket should start at the same byte address"
-                assert (
-                    param_buffer.numel() == bucket.data.numel()
-                ), "param_buffer and grad_buffer for same bucket should have the same number of elements"
-                current_param_buffers.append(param_buffer)
-            self.param_buffers.append(current_param_buffers)
-
         # Now construct data structures to manage all-gather handles.
         self.all_gather_handles = []
         self.all_gather_handle_index_to_bucket_index_map = []
         self.model_index_to_all_gather_handle_index_map = {}
         self.all_gather_handle_indices = []
         self.param_to_all_gather_handle_index_map = {}
-        self.param_buffer_copied = []
 
         self.pbuf_view_items = self.get_model_param_buffer_dp_views()
         for (gbuf_index, dtype, bucket_index, _, _) in self.pbuf_view_items:
@@ -496,9 +490,8 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 all_gather_handle_index
             )
 
-            for param in self.grad_buffers[gbuf_index].buckets[bucket_index].params_list:
+            for param in self.buffers[gbuf_index].buckets[bucket_index].params_list:
                 self.param_to_all_gather_handle_index_map[param] = all_gather_handle_index
-            self.param_buffer_copied.append(False)
         self.num_all_gather_handles = len(self.all_gather_handle_index_to_bucket_index_map)
 
         self.overlap_param_gather = overlap_param_gather
@@ -660,6 +653,9 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                     'Skipping loading grad scaler ...'
                 )
 
+        if 'param_state' in state_dict:
+            self.load_parameter_state_from_state_dict(state_dict["param_state"])
+
     def get_parameter_state(self):
         """Get parameter state (i.e., parameter & optimizer tensors).
 
@@ -694,7 +690,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 for bucket_idx, gbuf_range_map in enumerate(gbuf_range_map_for_all_buckets):
 
                     # Compute local DP contiguous shard's size.
-                    gbuf_world_numel = self.grad_buffers[gbuf_idx].buckets[bucket_idx].data.numel()
+                    gbuf_world_numel = self.buffers[gbuf_idx].buckets[bucket_idx].grad_data.numel()
                     assert gbuf_world_numel % data_parallel_world_size == 0
                     gbuf_local_numel = gbuf_world_numel // data_parallel_world_size
                     local_shards = {
@@ -766,6 +762,48 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         if torch.distributed.get_rank(self.data_parallel_group) == 0:
             torch.save(state_dict, filename)
 
+    def sharded_state_dict(
+        self, model_sharded_state_dict: ShardedStateDict, is_loading: bool = False
+    ):
+        """ Naive implementation which reuses gather/scatter from the legacy ckpt format.
+
+        During saving, gathers the parameters state on DP rank 0 and saves a ShardedObject
+        with fixed TPxPP structure. During loading, loads the saved data on DP rank 0
+        (None on other ranks). Relies on the parameters scatter done in load_state_dict.
+
+        Regular state dict parameters are saved on DP rank 0 and loaded on all ranks.
+        """
+        state_dict = {
+            k: ShardedObject(
+                f'optimizer.distributed.dp_group_idx_{self.data_parallel_group_idx}.{k}',
+                v,
+                (1,),
+                (0,),
+                replica_id=torch.distributed.get_rank(self.data_parallel_group),
+            )
+            for k, v in self.state_dict().items()
+        }
+
+        if is_loading:
+            self.init_state_fn(self.optimizer)
+            param_state_data = None
+        else:
+            param_state_data = self.get_parameter_state()
+
+        if torch.distributed.get_rank(self.data_parallel_group) == 0:
+            # Fixed TPxPP
+            param_state = ShardedObject(
+                f'optimizer.distributed.dp_group_idx_{self.data_parallel_group_idx}.param_state',
+                param_state_data,
+                (1,),
+                (0,),
+            )
+        else:
+            param_state = LocalNonpersitentObject(None)
+
+        state_dict['param_state'] = param_state
+        return state_dict
+
     def load_parameter_state_from_state_dict(self, state_dict):
         """Load parameter state (i.e., parameter & optimizer tensors).
 
@@ -776,6 +814,13 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
           buffers. (e.g., one buffer each for main_param, exp_avg, and
           exp_avg_sq).
         """
+        if state_dict is not None and "per_bucket_numel_unpadded" in state_dict:
+            per_bucket_numel_unpadded_in_checkpoint = state_dict["per_bucket_numel_unpadded"]
+            assert self.per_bucket_numel_unpadded == per_bucket_numel_unpadded_in_checkpoint, (
+                f"Number of unpadded elements in each bucket need to be the same in current run "
+                f"({self.per_bucket_numel_unpadded}) and checkpoint "
+                f"({per_bucket_numel_unpadded_in_checkpoint})"
+            )
 
         # Data parallelism variables.
         data_parallel_world_size = self.data_parallel_group_gloo.size()
@@ -791,7 +836,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 for bucket_idx, gbuf_range_map in enumerate(gbuf_range_map_for_all_buckets):
 
                     # Compute local DP contiguous shard's size.
-                    gbuf_world_numel = self.grad_buffers[gbuf_idx].buckets[bucket_idx].data.numel()
+                    gbuf_world_numel = self.buffers[gbuf_idx].buckets[bucket_idx].grad_data.numel()
                     assert gbuf_world_numel == self.per_bucket_numel[gbuf_idx][dtype][bucket_idx]
                     assert gbuf_world_numel % data_parallel_world_size == 0
                     gbuf_local_numel = gbuf_world_numel // data_parallel_world_size
@@ -901,13 +946,6 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         state_dict = None
         if torch.distributed.get_rank(self.data_parallel_group) == 0:
             state_dict = torch.load(filename)
-            if "per_bucket_numel_unpadded" in state_dict:
-                per_bucket_numel_unpadded_in_checkpoint = state_dict["per_bucket_numel_unpadded"]
-                assert self.per_bucket_numel_unpadded == per_bucket_numel_unpadded_in_checkpoint, (
-                    f"Number of unpadded elements in each bucket need to be the same in current run "
-                    f"({self.per_bucket_numel_unpadded}) and checkpoint "
-                    f"({per_bucket_numel_unpadded_in_checkpoint})"
-                )
 
         self.load_parameter_state_from_state_dict(state_dict)
 
@@ -966,7 +1004,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         view_items = []
         for gbuf_index, buffers in enumerate(self.param_buffers):
             view_items_per_model_chunk = []
-            dtype = self.grad_buffers[gbuf_index].dtype
+            dtype = self.buffers[gbuf_index].param_dtype
             for bucket_index, buf in enumerate(buffers):
                 data_parallel_world_size = torch.distributed.get_world_size(
                     self.data_parallel_group
@@ -1011,9 +1049,6 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 bucket_index,
             )
 
-        if not async_op:
-            self._copy_params_from_param_buffer(all_gather_handle_index)
-
     def _make_forward_pre_hook(self):
         """
         Create a forward pre-hook to wait on all-gather handles when necessary (i.e.,
@@ -1032,9 +1067,12 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 if not param.requires_grad:
                     continue
 
-                assert param in self.param_to_all_gather_handle_index_map
-                all_gather_handle_index = self.param_to_all_gather_handle_index_map[param]
-                self._finish_param_sync_helper(all_gather_handle_index)
+                # Some params might be handled in another DistributedOptimizer instance; for
+                # example, we use separate DistributedOptimizer instances for expert and
+                # non-expert params.
+                if param in self.param_to_all_gather_handle_index_map:
+                    all_gather_handle_index = self.param_to_all_gather_handle_index_map[param]
+                    self._finish_param_sync_helper(all_gather_handle_index)
 
         return hook
 
@@ -1071,42 +1109,6 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             next_all_gather_handle_index = all_gather_handle_index + 1
             if next_all_gather_handle_index < self.num_all_gather_handles:
                 self._dispatch_gather_model_params(next_all_gather_handle_index)
-
-        # Also check if we have already copied from the param buffer for this
-        # handle; if not, complete the copy and mark as such.
-        if not self.param_buffer_copied[all_gather_handle_index]:
-            self._copy_params_from_param_buffer(all_gather_handle_index)
-            self.param_buffer_copied[all_gather_handle_index] = True
-
-    def _copy_params_from_param_buffer(self, all_gather_handle_index):
-        """
-        Copy params from param_buffer to model_params.
-        """
-        (gbuf_index, dtype, bucket_index) = self.all_gather_handle_index_to_bucket_index_map[
-            all_gather_handle_index
-        ]
-        grad_buffer = self.grad_buffers[gbuf_index]
-
-        if self.update_successful:
-            # Copy from param buffer to each param.
-            param_map = grad_buffer.param_index_map
-            for param, (buf_start, buf_end, bucket_index_in_param_map) in param_map.items():
-                if bucket_index == bucket_index_in_param_map:
-                    bucket_offset = grad_buffer.buckets[bucket_index].offset
-                    param_buf = self.param_buffers[gbuf_index][bucket_index]
-                    # buf_start and buf_end store position of this parameter in the full grad_buffer,
-                    # so need to adjust these indices (by subtracting out bucket_offset) since we
-                    # have independent param_bufs for each bucket.
-                    param_buf_shard = param_buf[buf_start - bucket_offset : buf_end - bucket_offset]
-                    assert param.data.nelement() == param_buf_shard.nelement()
-                    param.view(-1).detach().copy_(param_buf_shard)
-
-        # Zero out the grad buffer in preparation for next set of fwd / bwd passes after copy
-        # completes (since param_buffer and grad_buffer are shared for each bucket).
-        param_buf = self.param_buffers[gbuf_index][bucket_index]
-        grad_buf = grad_buffer.buckets[bucket_index].data
-        assert param_buf.data_ptr() == grad_buf.data_ptr()
-        grad_buf.zero_()
 
     def _collect_main_grad_data_for_unscaling(self):
         """
@@ -1217,7 +1219,6 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
     def _reset_metadata_and_sync_gather_all_model_params(self, force_sync):
         # Reset metadata needed to track results of all-gathers.
         self.all_gather_handles = [None for _ in range(len(self.all_gather_handles))]
-        self.param_buffer_copied = [False for _ in range(len(self.param_buffer_copied))]
 
         # Launch synchronous all-gather if --overlap-param-gather is turned on or if force_sync
         # is explicitly set to True (e.g., if we are going to turn off all-gather overlapping for

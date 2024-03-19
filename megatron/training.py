@@ -61,10 +61,13 @@ def print_datetime(string):
 
 
 def num_floating_point_operations(args, batch_size):
+    # Group Query Attention.
     if not args.group_query_attention:
         args.num_query_groups = args.num_attention_heads
+    # MoE.
+    num_experts_routed_to = 1 if args.num_experts is None else args.moe_router_topk
     return (
-        60
+        12
         * batch_size
         * args.seq_length
         * args.num_layers
@@ -72,9 +75,10 @@ def num_floating_point_operations(args, batch_size):
         * args.hidden_size
         * (
             1
-            + (args.num_query_groups / (5 * args.num_attention_heads))
-            + (args.seq_length / (5 * args.hidden_size))
-            + (args.padded_vocab_size / (10 * args.num_layers * args.hidden_size))
+            + ((args.ffn_hidden_size / args.hidden_size) * num_experts_routed_to)
+            + (args.num_query_groups / args.num_attention_heads)
+            + (args.seq_length / args.hidden_size)
+            + (args.padded_vocab_size / (2 * args.num_layers * args.hidden_size))
         )
     )
 
@@ -263,7 +267,7 @@ def pretrain(train_valid_test_dataset_provider,
 
         print_datetime('after training is done')
 
-        if args.save and iteration != 0:
+        if args.save and iteration != 0 and iteration % args.save_interval != 0:
             save_checkpoint(iteration, model, optimizer, opt_param_scheduler,
                             num_floating_point_operations_so_far)
     else:
@@ -526,10 +530,7 @@ def train_step(forward_step_func, data_iterator,
 
     # Set grad to zero.
     for model_chunk in model:
-        # If using distributed optimizer, don't zero buffer here; zeroing of buffer is
-        # handled automatically by the optimizer after all-gathers finish.
-        # Otherwise, zero the buffer.
-        model_chunk.zero_grad_buffer(zero_buffer=(not args.use_distributed_optimizer))
+        model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
     # Forward pass.
@@ -549,7 +550,7 @@ def train_step(forward_step_func, data_iterator,
         torch.cuda.empty_cache()
 
     # Vision gradients.
-    if args.vision_pretraining and args.vision_pretraining_type == "dino":
+    if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
 
@@ -559,7 +560,7 @@ def train_step(forward_step_func, data_iterator,
     timers('optimizer').stop()
 
     # Vision momentum.
-    if args.vision_pretraining and args.vision_pretraining_type == "dino":
+    if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.update_momentum(args.curr_iteration)
 
@@ -1369,23 +1370,32 @@ def build_train_valid_test_data_iterators(
 
     # Build iterators.
     dl_type = args.dataloader_type
-    assert dl_type in ['single', 'cyclic']
+    assert dl_type in ['single', 'cyclic', 'external']
+
+    def _get_iterator(dataloader_type, dataloader):
+        """Return dataset iterator."""
+        if dataloader_type == "single":
+            return iter(dataloader)
+        elif dataloader_type == "cyclic":
+            return iter(cyclic_iter(dataloader))
+        elif dataloader_type == "external":
+            # External dataloader is passed through. User is expected to define how to iterate.
+            return dataloader
+        else:
+            raise RuntimeError("unexpected dataloader type")
 
     if train_dataloader is not None:
-        train_data_iterator = iter(train_dataloader) if dl_type == 'single' \
-                              else iter(cyclic_iter(train_dataloader))
+        train_data_iterator = _get_iterator(dl_type, train_dataloader)
     else:
         train_data_iterator = None
 
     if valid_dataloader is not None:
-        valid_data_iterator = iter(valid_dataloader) if dl_type == 'single' \
-                              else iter(cyclic_iter(valid_dataloader))
+        valid_data_iterator = _get_iterator(dl_type, valid_dataloader)
     else:
         valid_data_iterator = None
 
     if test_dataloader is not None:
-        test_data_iterator = iter(test_dataloader) if dl_type == 'single' \
-                             else iter(cyclic_iter(test_dataloader))
+        test_data_iterator = _get_iterator(dl_type, test_dataloader)
     else:
         test_data_iterator = None
 
