@@ -971,10 +971,6 @@ def _add_training_args(parser):
     group.add_argument('--disable-tp-comm-bulk-wgrad', action='store_false',
                        help = 'Disables the Reduce-Scatter overlap with bprop weight gradient GEMM.',
                        dest='tp_comm_bulk_wgrad')
-    group.add_argument('--validation_drop_last', action='store_false', default=True,
-                       help = 'Drop last partial validation samples.')
-    group.add_argument('--pad_to_global_batch_size', action='store_false', default=True,
-                       help = "pad the last partial batch with -1's to equal global batch size.")
 
 
     # deprecated
@@ -1405,6 +1401,10 @@ def _add_data_args(parser):
                        'end-of-document token.')
     group.add_argument('--eod-mask-loss', action='store_true',
                        help='Mask loss for the end of document tokens.')
+    group.add_argument('--validation_drop_last', action='store_false', default=True,
+                       help = 'Drop last partial validation samples.')
+    group.add_argument('--pad_to_global_batch_size', action='store_false', default=True,
+                       help = "pad the last partial batch with -1's to equal global batch size.")
 
     return parser
 
