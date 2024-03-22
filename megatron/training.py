@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 """Pretrain utilities."""
 
@@ -38,6 +38,12 @@ from megatron import (
 )
 from megatron.checkpointing import load_checkpoint, save_checkpoint
 from megatron.core import mpu, tensor_parallel
+from megatron.core.utils import get_model_config
+from megatron import print_rank_0
+from megatron import print_rank_last
+from megatron.checkpointing import load_checkpoint
+from megatron.checkpointing import save_checkpoint
+from megatron.model import Float16Module
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
@@ -261,7 +267,8 @@ def pretrain(train_valid_test_dataset_provider,
     if not args.skip_train:
         print_rank_0('training ...')
 
-        if args.dataloader_type == 'cyclic' and args.retro_add_retriever:
+        if args.dataloader_type == 'cyclic' and args.retro_project_dir:
+            assert args.retro_cyclic_train_iters is not None
             args.train_iters = args.retro_cyclic_train_iters
             print_rank_0("retro cyclic train iters : %d" % args.train_iters)
 
@@ -383,12 +390,6 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     if not isinstance(model, list):
         model = [model]
 
-    # Disallow training and inference with Transformer Engine
-    # for non-GPT models
-    args.allow_transformer_engine = all([type(m) == GPTModel for m in model])
-    # assert args.allow_transformer_engine or args.transformer_impl == 'local', \
-    #     'Transformer Engine is only approved for GPT models'
-
     # Set tensor model parallel attributes if not set.
     # Only parameters that are already tensor model parallel have these
     # attributes set for them. We should make sure the default attributes
@@ -494,6 +495,7 @@ def setup_model_and_optimizer(model_provider_func,
                               lr_mult=1.0):
     """Setup model and optimizer."""
     args = get_args()
+    timers = get_timers()
 
     model = get_model(model_provider_func, model_type)
     unwrapped_model = unwrap_model(model)
@@ -503,12 +505,12 @@ def setup_model_and_optimizer(model_provider_func,
         if hasattr(args, f.name):
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
+    config.timers = timers
     optimizer = get_megatron_optimizer(config, model, no_wd_decay_cond,
                                        scale_lr_cond, lr_mult)
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
 
     if args.load is not None:
-        timers = get_timers()
         timers('load-checkpoint', log_level=0).start(barrier=True)
         args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
             model, optimizer, opt_param_scheduler)
@@ -564,7 +566,7 @@ def train_step(forward_step_func, data_iterator,
 
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
-    update_successful, grad_norm, num_zeros_in_grad = optimizer.step(args, timers)
+    update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
     timers('optimizer').stop()
 
     # Vision momentum.
@@ -764,7 +766,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
             if wandb_writer:
                 wandb_writer.log({'iteration-time': elapsed_time_per_iteration},
                                  iteration)
-        log_string = ' iteration {:8d}/{:8d} |'.format(
+        log_string = f" [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
+        log_string += ' iteration {:8d}/{:8d} |'.format(
             iteration, args.train_iters)
         log_string += ' consumed samples: {:12d} |'.format(
             args.consumed_train_samples)
@@ -1272,8 +1275,8 @@ def cyclic_iter(iter):
             yield x
 
 
-def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
-    """Build pretraining datasets."""
+def get_train_valid_test_num_samples():
+    """Train/valid/test num samples."""
 
     args = get_args()
 
@@ -1285,16 +1288,22 @@ def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
     eval_iters = (args.train_iters // args.eval_interval + 1) * \
                  args.eval_iters
     test_iters = args.eval_iters
-    train_val_test_num_samples = [train_samples,
-                                  eval_iters * args.global_batch_size,
-                                  test_iters * args.global_batch_size]
-    print_rank_0(' > datasets target sizes (minimum size):')
-    print_rank_0('    train:      {}'.format(train_val_test_num_samples[0]))
-    print_rank_0('    validation: {}'.format(train_val_test_num_samples[1]))
-    print_rank_0('    test:       {}'.format(train_val_test_num_samples[2]))
 
-    # Build the datasets.
-    return build_train_valid_test_datasets_provider(train_val_test_num_samples)
+    return (
+        train_samples,
+        eval_iters * args.global_batch_size,
+        test_iters * args.global_batch_size,
+    )
+
+
+def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
+    """Build pretraining datasets."""
+    train_valid_test_num_samples = get_train_valid_test_num_samples()
+    print_rank_0(' > datasets target sizes (minimum size):')
+    print_rank_0('    train:      {}'.format(train_valid_test_num_samples[0]))
+    print_rank_0('    validation: {}'.format(train_valid_test_num_samples[1]))
+    print_rank_0('    test:       {}'.format(train_valid_test_num_samples[2]))
+    return build_train_valid_test_datasets_provider(train_valid_test_num_samples)
 
 
 def build_train_valid_test_data_loaders(
