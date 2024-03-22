@@ -41,6 +41,9 @@ class MockMultimodalDataset(MockGPTDataset):
     This is unused at the moment and may be missing features. Follow-up changes will use this.
     """
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Return a sample that contains a dummy image, text sequence and the associated labels and cost and attention masks.
 
