@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Iterable, Optional, Union
 
 import numpy
 import torch
@@ -14,6 +14,8 @@ from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatr
 from megatron.core.datasets.indexed_dataset import IndexedDataset
 from megatron.core.datasets.megatron_dataset import MegatronDataset, MockDataset
 from megatron.core.datasets.utils import Split, log_single_rank
+
+LowLevelDataset = Union[IndexedDataset, Iterable]
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +65,16 @@ class MockGPTDataset(MockDataset):
     """The mock GPT dataset
     """
 
-    def __post_init__(self) -> None:
-        """check if masks and position_ids can be cached
-        """
-        super().__post_init__()
+    def __init__(
+        self,
+        dataset: Optional[LowLevelDataset],
+        dataset_path: Optional[str],
+        indices: Optional[numpy.ndarray],
+        num_samples: int,
+        index_split: Split,
+        config: BlendedMegatronDatasetConfig,
+    ) -> None:
+        super().__init__(dataset, dataset_path, indices, num_samples, index_split, config)
 
         self.masks_and_position_ids_cachable = not any(
             [
@@ -170,13 +178,6 @@ class GPTDataset(MegatronDataset):
             indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
         )
 
-        self.vocab_size = config.vocab_size
-
-    def __post_init__(self) -> None:
-        """check if masks and position_ids can be cached
-        """
-        super().__post_init__()
-
         self.masks_and_position_ids_cachable = not any(
             [
                 self.config.reset_position_ids,
@@ -188,6 +189,8 @@ class GPTDataset(MegatronDataset):
         self.cached_attention_mask = None
         self.cached_loss_mask = None
         self.cached_position_ids = None
+
+        self.vocab_size = config.vocab_size
 
     def _finalize(self) -> None:
         """Abstract method implementation
