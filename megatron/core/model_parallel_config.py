@@ -184,10 +184,9 @@ class ModelParallelConfig:
     tp_comm_overlap: bool = False
 
     # Debug Options
-    tp_comm_split_ag: bool = True
-    tp_comm_atomic_ag: bool = False
-    tp_comm_split_rs: bool = True
-    tp_comm_atomic_rs: bool = False
+    tp_comm_overlap_rs: bool = True
+    tp_comm_overlap_rs_dgrad: bool = False
+    tp_comm_overlap_ag: bool = True
     tp_comm_bulk_wgrad: bool = True
     tp_comm_bulk_dgrad: bool = True
 
