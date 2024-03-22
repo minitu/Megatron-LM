@@ -1401,9 +1401,9 @@ def _add_data_args(parser):
                        'end-of-document token.')
     group.add_argument('--eod-mask-loss', action='store_true',
                        help='Mask loss for the end of document tokens.')
-    group.add_argument('--validation_drop_last', action='store_false', default=True,
+    group.add_argument('--validation-drop-last', action='store_true', default=False,
                        help = 'Drop last partial validation samples.')
-    group.add_argument('--pad_to_global_batch_size', action='store_false', default=True,
+    group.add_argument('--pad-to-global-batch-size', action='store_true', default=False,
                        help = "pad the last partial batch with -1's to equal global batch size.")
 
     return parser
