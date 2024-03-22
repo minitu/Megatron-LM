@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Tuple, Iterable, Optional, Union
+from typing import Dict, Iterable, Optional, Tuple, Union
 
 import numpy
 import torch
