@@ -178,6 +178,8 @@ class GPTDataset(MegatronDataset):
             indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
         )
 
+        self.vocab_size = config.vocab_size
+
         self.masks_and_position_ids_cachable = not any(
             [
                 self.config.reset_position_ids,
@@ -189,8 +191,6 @@ class GPTDataset(MegatronDataset):
         self.cached_attention_mask = None
         self.cached_loss_mask = None
         self.cached_position_ids = None
-
-        self.vocab_size = config.vocab_size
 
     def _finalize(self) -> None:
         """Abstract method implementation
