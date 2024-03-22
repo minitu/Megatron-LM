@@ -1336,9 +1336,8 @@ def _add_data_args(parser):
                        'end-of-document token.')
     group.add_argument('--eod-mask-loss', action='store_true',
                        help='Mask loss for the end of document tokens.')
-    group.add_argument('--no-attention-mask-from-fusion', action='store_false',
-                       help='If attention kernel can generate attention masks by iteself.',
-                       dest='get-attention-mask-from-fusion')
+    group.add_argument('--get-attention-mask-from-fusion', action='store_true',
+                       help='Attention kernel can generate attention masks by iteself.')
 
     return parser
 
