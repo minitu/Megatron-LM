@@ -43,7 +43,7 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
 
     eod_mask_loss: bool = None
 
-    get_attention_mask_from_fusion: bool = None
+    get_attention_mask_from_fusion: bool = False
 
     vocab_size: int = sys.maxsize
 
@@ -57,7 +57,6 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
         assert self.reset_position_ids is not None
         assert self.reset_attention_mask is not None
         assert self.eod_mask_loss is not None
-        assert self.get_attention_mask_from_fusion is not None
 
 
 class MockGPTDataset(MockDataset):
