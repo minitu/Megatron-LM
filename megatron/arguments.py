@@ -10,13 +10,10 @@ import types
 
 import torch
 import torch.nn.functional as F
-from megatron.core.models.retro.utils import (
-    get_config_path as get_retro_config_path,
-    get_gpt_data_dir as get_retro_data_dir,
-)
+
+from megatron.core.models.retro.utils import get_config_path as get_retro_config_path
+from megatron.core.models.retro.utils import get_gpt_data_dir as get_retro_data_dir
 from megatron.core.transformer import TransformerConfig
-from megatron.global_vars import get_retro_args, set_retro_args
-from tools.retro.utils import get_args_path as get_retro_args_path
 
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):

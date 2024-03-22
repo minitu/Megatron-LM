@@ -38,12 +38,6 @@ from megatron import (
 )
 from megatron.checkpointing import load_checkpoint, save_checkpoint
 from megatron.core import mpu, tensor_parallel
-from megatron.core.utils import get_model_config
-from megatron import print_rank_0
-from megatron import print_rank_last
-from megatron.checkpointing import load_checkpoint
-from megatron.checkpointing import save_checkpoint
-from megatron.model import Float16Module
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
@@ -56,7 +50,7 @@ from megatron.initialize import (
     set_jit_fusion_options,
     write_args_to_tensorboard,
 )
-from megatron.model import Float16Module, GPTModel
+from megatron.model import Float16Module
 from megatron.model.vision.knn_monitor import compute_feature_bank
 from megatron.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.utils import (
