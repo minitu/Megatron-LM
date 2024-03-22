@@ -139,13 +139,21 @@ class MockGPTDataset(MockDataset):
             loss_mask = self.cached_loss_mask
             position_ids = self.cached_position_ids
 
-        return {
-            "tokens": tokens,
-            "labels": labels,
-            "attention_mask": attention_mask,
-            "loss_mask": loss_mask,
-            "position_ids": position_ids,
-        }
+        if self.config.get_attention_mask_from_fusion:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
+        else:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
 
 
 class GPTDataset(MegatronDataset):
@@ -278,13 +286,21 @@ class GPTDataset(MegatronDataset):
             loss_mask = self.cached_loss_mask
             position_ids = self.cached_position_ids
 
-        return {
-            "tokens": tokens,
-            "labels": labels,
-            "attention_mask": attention_mask,
-            "loss_mask": loss_mask,
-            "position_ids": position_ids,
-        }
+        if self.config.get_attention_mask_from_fusion:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
+        else:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
 
     def _query_document_sample_shuffle_indices(
         self, idx: int
