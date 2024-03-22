@@ -1,55 +1,64 @@
-# Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 """Pretrain utilities."""
 
-import gc
 import dataclasses
-from datetime import datetime
-import math
+import gc
 import logging
+import math
 import os
 import sys
+from datetime import datetime
+
 from .log_handler import CustomHandler
+
 # Make default logging level INFO, but filter out all log messages not from MCore.
 logging.basicConfig(handlers=[CustomHandler()], level=logging.INFO)
-from .theoretical_memory_usage import report_theoretical_memory
 import time
+
+from .theoretical_memory_usage import report_theoretical_memory
+
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
 import torch
 
-from megatron import get_args
-from megatron import get_signal_handler
-from megatron import get_timers
-from megatron import get_tensorboard_writer
-from megatron import get_wandb_writer
-from megatron import get_one_logger
-from megatron import get_current_global_batch_size
-from megatron import get_num_microbatches
-from megatron import is_last_rank
-from megatron import update_num_microbatches
+from megatron import (
+    get_args,
+    get_current_global_batch_size,
+    get_num_microbatches,
+    get_one_logger,
+    get_signal_handler,
+    get_tensorboard_writer,
+    get_timers,
+    get_wandb_writer,
+    is_last_rank,
+    print_rank_0,
+    print_rank_last,
+    update_num_microbatches,
+)
+from megatron.checkpointing import load_checkpoint, save_checkpoint
 from megatron.core import mpu, tensor_parallel
-from megatron.core.utils import get_model_config
-from megatron import print_rank_0
-from megatron import print_rank_last
-from megatron.checkpointing import load_checkpoint
-from megatron.checkpointing import save_checkpoint
-from megatron.model import Float16Module
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
-from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
-from megatron.initialize import initialize_megatron
-from megatron.initialize import write_args_to_tensorboard
-from megatron.initialize import set_jit_fusion_options
-from megatron.optimizer_param_scheduler import OptimizerParamScheduler
-from megatron.utils import check_adlr_autoresume_termination
-from megatron.utils import unwrap_model
-from megatron.data.data_samplers import build_pretraining_data_loader
-from megatron.utils import calc_params_l2_norm
+from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.utils import report_memory
+from megatron.core.utils import get_model_config
+from megatron.data.data_samplers import build_pretraining_data_loader
+from megatron.initialize import (
+    initialize_megatron,
+    set_jit_fusion_options,
+    write_args_to_tensorboard,
+)
+from megatron.model import Float16Module
 from megatron.model.vision.knn_monitor import compute_feature_bank
+from megatron.optimizer_param_scheduler import OptimizerParamScheduler
+from megatron.utils import (
+    calc_params_l2_norm,
+    check_adlr_autoresume_termination,
+    report_memory,
+    unwrap_model,
+)
 
 
 def print_datetime(string):
@@ -252,7 +261,8 @@ def pretrain(train_valid_test_dataset_provider,
     if not args.skip_train:
         print_rank_0('training ...')
 
-        if args.dataloader_type == 'cyclic' and args.retro_add_retriever:
+        if args.dataloader_type == 'cyclic' and args.retro_project_dir:
+            assert args.retro_cyclic_train_iters is not None
             args.train_iters = args.retro_cyclic_train_iters
             print_rank_0("retro cyclic train iters : %d" % args.train_iters)
 
@@ -1259,8 +1269,8 @@ def cyclic_iter(iter):
             yield x
 
 
-def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
-    """Build pretraining datasets."""
+def get_train_valid_test_num_samples():
+    """Train/valid/test num samples."""
 
     args = get_args()
 
@@ -1272,16 +1282,22 @@ def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
     eval_iters = (args.train_iters // args.eval_interval + 1) * \
                  args.eval_iters
     test_iters = args.eval_iters
-    train_val_test_num_samples = [train_samples,
-                                  eval_iters * args.global_batch_size,
-                                  test_iters * args.global_batch_size]
-    print_rank_0(' > datasets target sizes (minimum size):')
-    print_rank_0('    train:      {}'.format(train_val_test_num_samples[0]))
-    print_rank_0('    validation: {}'.format(train_val_test_num_samples[1]))
-    print_rank_0('    test:       {}'.format(train_val_test_num_samples[2]))
 
-    # Build the datasets.
-    return build_train_valid_test_datasets_provider(train_val_test_num_samples)
+    return (
+        train_samples,
+        eval_iters * args.global_batch_size,
+        test_iters * args.global_batch_size,
+    )
+
+
+def build_train_valid_test_datasets(build_train_valid_test_datasets_provider):
+    """Build pretraining datasets."""
+    train_valid_test_num_samples = get_train_valid_test_num_samples()
+    print_rank_0(' > datasets target sizes (minimum size):')
+    print_rank_0('    train:      {}'.format(train_valid_test_num_samples[0]))
+    print_rank_0('    validation: {}'.format(train_valid_test_num_samples[1]))
+    print_rank_0('    test:       {}'.format(train_valid_test_num_samples[2]))
+    return build_train_valid_test_datasets_provider(train_valid_test_num_samples)
 
 
 def build_train_valid_test_data_loaders(
@@ -1313,14 +1329,25 @@ def build_train_valid_test_data_loaders(
         # Build datasets.
         train_ds, valid_ds, test_ds = build_train_valid_test_datasets(
             build_train_valid_test_datasets_provider)
-        # Build dataloders.
+        # Build train dataloders.
         train_dataloader = build_pretraining_data_loader(
             train_ds, args.consumed_train_samples)
+        
+        # Build validation dataloders.
+        print(args)
+        logging.info(f'Drop last in validation dataset is set to {args.validation_drop_last}')
+        drop_last = args.validation_drop_last
+        
+        logging.info(f'pad_to_global_batch_size set to {args.pad_to_global_batch_size}')
+        pad_to_global_batch_size = args.validation_drop_last
+        
         if args.skip_train:
-            valid_dataloader = build_pretraining_data_loader(valid_ds, 0)
+            valid_dataloader = build_pretraining_data_loader(valid_ds, 0, drop_last, pad_to_global_batch_size)
         else:
             valid_dataloader = build_pretraining_data_loader(
-                valid_ds, args.consumed_valid_samples)
+                valid_ds, args.consumed_valid_samples, drop_last, pad_to_global_batch_size)
+        
+        # Build test dataloders.
         test_dataloader = build_pretraining_data_loader(test_ds, 0)
 
         # Flags to know if we need to do training/validation/testing.

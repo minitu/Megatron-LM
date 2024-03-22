@@ -87,7 +87,9 @@ py::array build_sample_idx(const py::array_t<int32_t> &sizes_,
                            const py::array_t<int32_t> &doc_idx_,
                            const int32_t seq_length,
                            const int32_t num_epochs,
-                           const int64_t tokens_per_epoch)
+                           const int64_t tokens_per_epoch,
+                           const bool drop_last = true,
+                           const int add_one_extra_token = 1)
 {
   /* Sample index (sample_idx) is used for gpt2 like dataset for which
      the documents are flattened and the samples are built based on this
@@ -105,7 +107,15 @@ py::array build_sample_idx(const py::array_t<int32_t> &sizes_,
   auto doc_idx = doc_idx_.unchecked<1>();
 
   // Mapping and it's length (1D).
-  int64_t num_samples = (num_epochs * tokens_per_epoch - 1) / seq_length;
+  int64_t num_samples = 0;
+  if (drop_last == true)
+  {
+    num_samples = num_epochs * tokens_per_epoch - add_one_extra_token / seq_length;
+  } 
+  else
+  {
+    num_samples = ceil(float(num_epochs * tokens_per_epoch - add_one_extra_token) / seq_length);
+  }
   int32_t *sample_idx = new int32_t[2 * (num_samples + 1)];
 
   // Index into sample_idx.
@@ -122,7 +132,7 @@ py::array build_sample_idx(const py::array_t<int32_t> &sizes_,
   while (sample_index <= num_samples)
   {
     // Start with a fresh sequence.
-    int32_t remaining_seq_length = seq_length + 1;
+    int32_t remaining_seq_length = seq_length + add_one_extra_token;
     while (remaining_seq_length != 0)
     {
       // Get the document length.
@@ -136,11 +146,17 @@ py::array build_sample_idx(const py::array_t<int32_t> &sizes_,
       // `_num_epochs` calculations.
       if (remaining_seq_length <= 0)
       {
-        doc_offset += (remaining_seq_length + doc_length - 1);
+        doc_offset += (remaining_seq_length + doc_length - add_one_extra_token);
         remaining_seq_length = 0;
       }
       else
       {
+        if (doc_idx_index == (doc_idx_.shape(0) - 1))
+        {
+          assert(sample_index == num_samples);
+          doc_offset = sizes[doc_idx[doc_idx_index]] - add_one_extra_token;
+          break;
+        }
         // Otherwise, start from the begining of the next document.
         ++doc_idx_index;
         doc_offset = 0;

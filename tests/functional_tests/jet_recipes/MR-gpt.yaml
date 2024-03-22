@@ -59,6 +59,7 @@ products:
   - {tp_size: [2], pp_size: [2]}
   - {tp_size: [2], pp_size: [2], extra_args: ["--no-mmap-bin-files"], args_meta: ["no_mmap_bin_files"]}
   - {tp_size: [1], pp_size: [4], vp_size: [1]}
+  - {tp_size: [4], pp_size: [1], extra_args: ["--qk-layernorm --test-mode"]}
   - {tp_size: [1], pp_size: [2], extra_args: ['"--position-embedding-type rope"'], args_meta: ["rope_embeddings"]}
   - {tp_size: [1], pp_size: [2], extra_args: ['"--position-embedding-type rope --rotary-interleaved --no-rope-fusion"'], args_meta: ["rope_embeddings_interleaved_no_fusion"]}
   - {tp_size: [1], pp_size: [4], extra_args: ["--swiglu"], args_meta: ["swiglu"]}
@@ -78,6 +79,8 @@ products:
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce"'], args_meta: ["dist_optimizer_overlap_grad_reduce"]}
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce --untie-embeddings-and-output-weights"'], args_meta: ["dist_optimizer_overlap_grad_reduce_untied"]}
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce --overlap-param-gather"'], args_meta: ["dist_optimizer_overlap_grad_reduce_param_gather"]}
+  - {tp_size: [2], pp_size: [2], extra_args: ["--validation-drop_last"], args_meta: ["validation-drop_last"]}
+  - {tp_size: [2], pp_size: [2], extra_args: ["--pad-to-global-batch-size"], args_meta: ["pad-to-global-batch-size"]}
   # Non-MCore
   - {use_mcore: [False], use_te: [False, True], tp_size: [2], pp_size: [2]}
   - {use_mcore: [False], tp_size: [1], pp_size: [4], vp_size: [1]}

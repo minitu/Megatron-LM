@@ -36,6 +36,10 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
         additional attention masks.
 
         vocab_size (int): Size of vocabulary
+        
+        drop_last (bool): Option to drop the last incomplete batch
+                
+        add_one_extra_token (bool): Option to add an extra token to the input sequence
       
     """
 
@@ -48,6 +52,10 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
     get_attention_mask_from_fusion: bool = False
 
     vocab_size: int = sys.maxsize
+
+    drop_last: bool = True
+
+    add_one_extra_token: bool = True
 
     def __post_init__(self) -> None:
         """Do asserts and set fields post init
@@ -106,9 +114,8 @@ class MockGPTDataset(MockDataset):
         eod = 0
 
         assert (
-            idx < self.num_samples,
-            "Exceeded the available number of samples ({self.num_samples})",
-        )
+            idx < self.num_samples
+        ), "Exceeded the available number of samples ({self.num_samples})"
 
         rng = numpy.random.default_rng(seed=[self.index_split.value, idx])
         length = rng.integers(low=0, high=self.config.sequence_length)
@@ -186,7 +193,10 @@ class GPTDataset(MegatronDataset):
             indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
         )
 
+        self.sequence_length = config.sequence_length
         self.vocab_size = config.vocab_size
+        self.drop_last = config.drop_last
+        self.add_one_extra_token = int(config.add_one_extra_token)
 
         self.masks_and_position_ids_cachable = not any(
             [
@@ -260,8 +270,13 @@ class GPTDataset(MegatronDataset):
         text, _ = self._query_document_sample_shuffle_indices(idx)
 
         text = torch.from_numpy(text).long()
-        labels = text[1:].contiguous()
-        tokens = text[:-1].contiguous()
+        if self.add_one_extra_token:
+            tokens = text[:-1].contiguous()
+            labels = text[1:].contiguous()
+        else:
+            tokens = text
+            labels = torch.roll(text, shifts=-1, dims=0)
+            labels[-1] = -1
 
         assert not torch.any(
             tokens >= self.vocab_size
@@ -285,6 +300,19 @@ class GPTDataset(MegatronDataset):
             attention_mask = self.cached_attention_mask
             loss_mask = self.cached_loss_mask
             position_ids = self.cached_position_ids
+
+        loss_mask[labels == -1] = 0.0
+        tokens[tokens == -1] = 0
+        labels[labels == -1] = 0
+
+        # Negative index comes when we pad the last batch in MegatronPretrainingSampler
+        # We make the loss_mask zero to mask out loss from these samples
+        if idx == -1:
+            logging.debug('Got -1 as item index. Masking loss from this sample')
+            loss_mask = torch.zeros_like(loss_mask)
+        elif idx < 0:
+            logging.debug('Got negative as item index. Raising ValueError.')
+            raise ValueError(f"Got negative index: {idx}")
 
         if self.config.get_attention_mask_from_fusion:
             return {
@@ -333,7 +361,7 @@ class GPTDataset(MegatronDataset):
                 self.dataset.get(
                     self.document_index[doc_index_beg],
                     offset=doc_index_beg_offset,
-                    length=doc_index_end_offset - doc_index_beg_offset + 1,
+                    length=doc_index_end_offset - doc_index_beg_offset + self.add_one_extra_token,
                 )
             )
 
@@ -345,13 +373,41 @@ class GPTDataset(MegatronDataset):
 
                 # Add the sample part
                 offset = 0 if i > doc_index_beg else doc_index_beg_offset
-                length = None if i < doc_index_end else doc_index_end_offset + 1
+                length = (
+                    None if i < doc_index_end else doc_index_end_offset + self.add_one_extra_token
+                )
                 sample_parts.append(
                     self.dataset.get(self.document_index[i], offset=offset, length=length)
                 )
+        sample = numpy.concatenate(sample_parts)
+
+        # Pad the sample if necessary
+        if len(sample) != (self.sequence_length + self.add_one_extra_token):
+            logging.info(
+                f' > WARNING: Got sample of length: {len(sample)} for sequence length={self.sequence_length+self.add_one_extra_token}, padding the sample to match sequence length'
+            )
+            sample = numpy.array(sample, dtype=numpy.int64)
+            sample = numpy.pad(
+                sample,
+                (0, self.sequence_length + self.add_one_extra_token - len(sample)),
+                mode='constant',
+                constant_values=-1,
+            )
+
+            document_ids = numpy.array(document_ids, dtype=numpy.int64)
+            document_ids = numpy.pad(
+                document_ids,
+                (0, self.sequence_length + self.add_one_extra_token - len(sample)),
+                mode='constant',
+                constant_values=-1,
+            )
+
+            assert len(sample) == len(
+                document_ids
+            ), f"Sample and document ids must have the same length, got {len(sample)} and {len(document_ids)}"
 
         return (
-            numpy.array(numpy.concatenate(sample_parts), dtype=numpy.int64),
+            numpy.array(sample, dtype=numpy.int64),
             numpy.array(document_ids, dtype=numpy.int64),
         )
 
@@ -400,7 +456,10 @@ class GPTDataset(MegatronDataset):
             )
         )
 
-        if not cache_hit and torch.distributed.get_rank() == 0:
+        if not cache_hit and (
+            not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+        ):
+
             log_single_rank(
                 logger,
                 logging.INFO,
@@ -416,10 +475,12 @@ class GPTDataset(MegatronDataset):
             else:
                 # Get the number of samples for the last epoch
                 num_samples_sans_final_epoch = (
-                    (num_epochs - 1) * num_tokens_per_epoch - 1
+                    (num_epochs - 1) * num_tokens_per_epoch - self.add_one_extra_token
                 ) // sequence_length
                 num_samples_from_final_epoch = self.num_samples - num_samples_sans_final_epoch
-                num_samples_per_epoch = (num_tokens_per_epoch - 1) // sequence_length
+                num_samples_per_epoch = (
+                    num_tokens_per_epoch - self.add_one_extra_token
+                ) // sequence_length
 
                 # num_samples_from_final_epoch should be non-negative
                 assert num_samples_from_final_epoch >= 0
@@ -486,6 +547,8 @@ class GPTDataset(MegatronDataset):
                 sequence_length,
                 num_epochs,
                 num_tokens_per_epoch,
+                drop_last=self.drop_last,
+                add_one_extra_token=self.add_one_extra_token,
             )
             numpy.save(path_to_sample_index, sample_index, allow_pickle=True)
             t_end = time.time()
@@ -574,14 +637,13 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The number of epochs
         """
-        num_epochs = 0
-        num_tokens = 0
-        num_tokens_requested = (self.num_samples * self.config.sequence_length) + 1
-        while True:
-            num_epochs += 1
-            num_tokens += num_tokens_per_epoch
-            if num_tokens >= num_tokens_requested:
-                return num_epochs
+        assert self.num_samples > 0, "The number of samples must be positive"
+        assert num_tokens_per_epoch > 0, "The number of tokens per epoch must be positive"
+        num_tokens_requested = (
+            self.num_samples * self.config.sequence_length
+        ) + self.add_one_extra_token
+        num_epochs = (num_tokens_requested + num_tokens_per_epoch - 1) // num_tokens_per_epoch
+        return num_epochs
 
 
 def _build_document_index(
