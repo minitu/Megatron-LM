@@ -79,6 +79,8 @@ products:
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce"'], args_meta: ["dist_optimizer_overlap_grad_reduce"]}
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce --untie-embeddings-and-output-weights"'], args_meta: ["dist_optimizer_overlap_grad_reduce_untied"]}
   - {tp_size: [1], pp_size: [4], vp_size: [1], extra_args: ['"--use-distributed-optimizer --overlap-grad-reduce --overlap-param-gather"'], args_meta: ["dist_optimizer_overlap_grad_reduce_param_gather"]}
+  - {tp_size: [2], pp_size: [2], extra_args: ["--validation_drop_last"], args_meta: ["validation_drop_last"]}
+  - {tp_size: [2], pp_size: [2], extra_args: ["--pad_to_global_batch_size"], args_meta: ["pad_to_global_batch_size"]}
   # Non-MCore
   - {use_mcore: [False], use_te: [False, True], tp_size: [2], pp_size: [2]}
   - {use_mcore: [False], tp_size: [1], pp_size: [4], vp_size: [1]}
