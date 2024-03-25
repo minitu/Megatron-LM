@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Iterable, Optional, Tuple, Union
 
 import numpy
 import torch
@@ -14,6 +14,8 @@ from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatr
 from megatron.core.datasets.indexed_dataset import IndexedDataset
 from megatron.core.datasets.megatron_dataset import MegatronDataset, MockDataset
 from megatron.core.datasets.utils import Split, log_single_rank
+
+LowLevelDataset = Union[IndexedDataset, Iterable]
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
 
         eod_mask_loss (bool): Option to enable the EOD mask loss
 
+        get_attention_mask_from_fusion (bool): Option to enable the attention masks generation.
+        For example, flash attention can generate causal masks by itself, no need to generate
+        additional attention masks.
+
         vocab_size (int): Size of vocabulary
       
     """
@@ -38,6 +44,8 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
     reset_attention_mask: bool = None
 
     eod_mask_loss: bool = None
+
+    get_attention_mask_from_fusion: bool = False
 
     vocab_size: int = sys.maxsize
 
@@ -56,6 +64,29 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
 class MockGPTDataset(MockDataset):
     """The mock GPT dataset
     """
+
+    def __init__(
+        self,
+        dataset: Optional[LowLevelDataset],
+        dataset_path: Optional[str],
+        indices: Optional[numpy.ndarray],
+        num_samples: int,
+        index_split: Split,
+        config: BlendedMegatronDatasetConfig,
+    ) -> None:
+        super().__init__(dataset, dataset_path, indices, num_samples, index_split, config)
+
+        self.masks_and_position_ids_cachable = not any(
+            [
+                self.config.reset_position_ids,
+                self.config.reset_attention_mask,
+                self.config.eod_mask_loss,
+            ]
+        )
+        self.masks_and_position_ids_cached = False
+        self.cached_attention_mask = None
+        self.cached_loss_mask = None
+        self.cached_position_ids = None
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Return a sequence_length + 1 token sequence consisting of the following:
@@ -89,21 +120,40 @@ class MockGPTDataset(MockDataset):
         labels = text[1:].contiguous()
         tokens = text[:-1].contiguous()
 
-        attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
-            tokens,
-            eod,
-            self.config.reset_position_ids,
-            self.config.reset_attention_mask,
-            self.config.eod_mask_loss,
-        )
+        if not self.masks_and_position_ids_cachable or not self.masks_and_position_ids_cached:
+            attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+                tokens,
+                eod,
+                self.config.reset_position_ids,
+                self.config.reset_attention_mask,
+                self.config.eod_mask_loss,
+                self.config.get_attention_mask_from_fusion,
+            )
+            if self.masks_and_position_ids_cachable:
+                self.cached_attention_mask = attention_mask
+                self.cached_loss_mask = loss_mask
+                self.cached_position_ids = position_ids
+                self.masks_and_position_ids_cached = True
+        else:
+            attention_mask = self.cached_attention_mask
+            loss_mask = self.cached_loss_mask
+            position_ids = self.cached_position_ids
 
-        return {
-            "tokens": tokens,
-            "labels": labels,
-            "attention_mask": attention_mask,
-            "loss_mask": loss_mask,
-            "position_ids": position_ids,
-        }
+        if self.config.get_attention_mask_from_fusion:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
+        else:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
 
 
 class GPTDataset(MegatronDataset):
@@ -138,6 +188,18 @@ class GPTDataset(MegatronDataset):
         )
 
         self.vocab_size = config.vocab_size
+
+        self.masks_and_position_ids_cachable = not any(
+            [
+                self.config.reset_position_ids,
+                self.config.reset_attention_mask,
+                self.config.eod_mask_loss,
+            ]
+        )
+        self.masks_and_position_ids_cached = False
+        self.cached_attention_mask = None
+        self.cached_loss_mask = None
+        self.cached_position_ids = None
 
     def _finalize(self) -> None:
         """Abstract method implementation
@@ -206,21 +268,40 @@ class GPTDataset(MegatronDataset):
             tokens >= self.vocab_size
         ), "An input token is out of bounds of the tokenizer vocabulary"
 
-        attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
-            tokens,
-            self.config.tokenizer.eod,
-            self.config.reset_position_ids,
-            self.config.reset_attention_mask,
-            self.config.eod_mask_loss,
-        )
+        if not self.masks_and_position_ids_cachable or not self.masks_and_position_ids_cached:
+            attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+                tokens,
+                self.config.tokenizer.eod,
+                self.config.reset_position_ids,
+                self.config.reset_attention_mask,
+                self.config.eod_mask_loss,
+                self.config.get_attention_mask_from_fusion,
+            )
+            if self.masks_and_position_ids_cachable:
+                self.cached_attention_mask = attention_mask
+                self.cached_loss_mask = loss_mask
+                self.cached_position_ids = position_ids
+                self.masks_and_position_ids_cached = True
+        else:
+            attention_mask = self.cached_attention_mask
+            loss_mask = self.cached_loss_mask
+            position_ids = self.cached_position_ids
 
-        return {
-            "tokens": tokens,
-            "labels": labels,
-            "attention_mask": attention_mask,
-            "loss_mask": loss_mask,
-            "position_ids": position_ids,
-        }
+        if self.config.get_attention_mask_from_fusion:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
+        else:
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }
 
     def _query_document_sample_shuffle_indices(
         self, idx: int
@@ -582,6 +663,7 @@ def _get_ltor_masks_and_position_ids(
     reset_position_ids: bool,
     reset_attention_mask: bool,
     eod_mask_loss: bool,
+    get_attention_mask_from_fusion: bool,
 ):
     """Build masks and position id for left to right model.
 
@@ -596,6 +678,10 @@ def _get_ltor_masks_and_position_ids(
 
         eod_mask_loss (bool): Switch to enable the EOD mask loss
 
+        get_attention_mask_from_fusion (bool): Switch to enable the attention masks generation.
+        For example, flash attention can generate causal masks by itself, no need to generate
+        additional attention masks.
+
     Returns:
         torch.Tensor : Attention mask needed to be used for Attention
 
@@ -605,9 +691,12 @@ def _get_ltor_masks_and_position_ids(
     """
     seq_length = data.numel()
 
-    attention_mask = torch.tril(torch.ones((seq_length, seq_length), device=data.device)).unsqueeze(
-        0
-    )
+    if not get_attention_mask_from_fusion:
+        attention_mask = torch.tril(
+            torch.ones((seq_length, seq_length), device=data.device)
+        ).unsqueeze(0)
+    else:
+        attention_mask = None
 
     # Loss mask.
     loss_mask = torch.ones(seq_length, dtype=torch.float, device=data.device)
@@ -632,14 +721,15 @@ def _get_ltor_masks_and_position_ids(
         for j in range(eod_index.numel()):
             i = eod_index[j]
             # Mask attention loss.
-            if reset_attention_mask:
+            if reset_attention_mask and attention_mask is not None:
                 attention_mask[0, (i + 1) :, : (i + 1)] = 0
             # Reset positions.
             if reset_position_ids:
                 position_ids[(i + 1) :] -= i + 1 - prev_index
                 prev_index = i + 1
 
-    # Convert attention mask to binary:
-    attention_mask = attention_mask < 0.5
+    if attention_mask is not None:
+        # Convert attention mask to binary:
+        attention_mask = attention_mask < 0.5
 
     return attention_mask, loss_mask, position_ids
