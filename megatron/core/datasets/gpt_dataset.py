@@ -15,7 +15,7 @@ from megatron.core.datasets.indexed_dataset import MMapIndexedDataset
 from megatron.core.datasets.megatron_dataset import MegatronDataset, MockDataset
 from megatron.core.datasets.utils import Split, log_single_rank
 
-LowLevelDataset = Union[IndexedDataset, Iterable]
+LowLevelDataset = Union[MMapIndexedDataset, Iterable]
 
 logger = logging.getLogger(__name__)
 
