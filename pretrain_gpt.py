@@ -180,6 +180,7 @@ def core_gpt_dataset_config_from_args(args):
         reset_position_ids=args.reset_position_ids,
         reset_attention_mask=args.reset_attention_mask,
         eod_mask_loss=args.eod_mask_loss,
+        get_attention_mask_from_fusion=args.get_attention_mask_from_fusion,
         vocab_size=get_tokenizer().vocab_size,
     )
 
