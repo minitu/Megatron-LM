@@ -183,17 +183,47 @@ class ModelParallelConfig:
     async_tensor_model_parallel_allreduce: bool = False
     tp_comm_overlap: bool = False
 
-    # Debug Options
-    tp_comm_split_ag: bool = True
-    tp_comm_atomic_ag: bool = False
-    tp_comm_split_rs: bool = True
-    tp_comm_atomic_rs: bool = False
     tp_comm_bulk_wgrad: bool = True
     tp_comm_bulk_dgrad: bool = True
 
     # Parallelism
     finalize_model_grads_func: Callable = None
 
+    tp_comm_overlap_ag: bool = True
+    """If true, allows All-Gather overlap with GEMM by pipelining the GEMM and All-Gather.
+       Don't care if tp_comm_overlap is False.
+    """
+
+    tp_comm_overlap_rs: bool = True
+    """If true, allows Reduce-Scatter overlap with GEMM by pipelining the GEMM and Reduce-Scatter.
+       Don't care if tp_comm_overlap is False.
+    """
+
+    tp_comm_split_ag: bool = True
+    """Deprecated from TransformerEngine v1.6.0.
+       If true, allows All-Gather overlap with Fprop GEMM by pipelining the GEMM and All-Gather
+       splits. Don't care if tp_comm_overlap is False.
+    """
+
+    tp_comm_atomic_ag: bool = False
+    """Deprecated from TransformerEngine v1.6.0.
+        If true, allows All-Gather overlap with Fprop GEMM by pipelining the GEMM and All-Gather both
+       done atomically. Don't care if tp_comm_overlap is False.
+    """
+
+    tp_comm_split_rs: bool = True
+    """Deprecated from TransformerEngine v1.6.0.
+       If true, allows Reduce-Scatter overlap with Fprop GEMM by pipelining the GEMM and
+       Reduce-Scatter splits. Don't care if tp_comm_overlap is False.
+    """
+
+    tp_comm_atomic_rs: bool = False
+    """Deprecated from TransformerEngine v1.6.0.
+       If true, allows Reduce-Scatter overlap with Fprop GEMM by pipelining the GEMM and
+       Reduce-Scatter both done atomically. Don't care if tp_comm_overlap is False.
+    """
+
+    ###################
     # Pipeline Parallel
     pipeline_dtype: torch.dtype = None
     grad_scale_func: Callable = None
